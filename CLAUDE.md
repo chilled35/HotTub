@@ -15,12 +15,12 @@ These files deploy to `/config/` on the HA instance:
 
 | Repo file | HA path |
 |---|---|
-| `hottub_helpers.yaml` | `/config/packages/hottub/hottub_helpers.yaml` |
-| `hottub_sensors.yaml` | `/config/packages/hottub/hottub_sensors.yaml` |
-| `hottub_automations.yaml` | `/config/packages/hottub/hottub_automations.yaml` |
-| `hottub_notifications.yaml` | `/config/packages/hottub/hottub_notifications.yaml` |
-| `hottub-temperature.yaml` | `/config/esphome/hottub-temperature.yaml` |
-| `dashboard.html` | `/config/www/hottub/dashboard.html` |
+| `packages/hottub/hottub_helpers.yaml` | `/config/packages/hottub/hottub_helpers.yaml` |
+| `packages/hottub/hottub_sensors.yaml` | `/config/packages/hottub/hottub_sensors.yaml` |
+| `packages/hottub/hottub_automations.yaml` | `/config/packages/hottub/hottub_automations.yaml` |
+| `packages/hottub/hottub_notifications.yaml` | `/config/packages/hottub/hottub_notifications.yaml` |
+| `esphome/hottub-temperature.yaml` | `/config/esphome/hottub-temperature.yaml` |
+| `www/hottub/dashboard.html` | `/config/www/hottub/dashboard.html` |
 
 `configuration.yaml.example` shows the `packages:` block that must exist in HA's `configuration.yaml`.
 
