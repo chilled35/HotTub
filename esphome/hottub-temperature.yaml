@@ -107,6 +107,7 @@ globals:
 # ── Temperature Sensor ────────────────────────────────────────────────────────
 sensor:
   - platform: dallas_temp
+    address: 0x9f0000006a642628
     name: "Temperature"
     id: hottub_temp
     update_interval: 30s
