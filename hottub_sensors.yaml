@@ -2,35 +2,49 @@
 # Hot Tub Control — Template Sensors & Binary Sensors
 # File: packages/hottub/hottub_sensors.yaml
 #
-# Entities produced:
+# "Template sensors" are virtual sensors whose value is computed
+# from a Jinja2 formula each time HA evaluates them. They don't
+# measure anything directly — they calculate from other entities.
+#
+# Sensors produced here:
 #   sensor.hot_tub_electricity_rate     — current p/kWh (Cosy tariff)
+#   sensor.hot_tub_today_total_kwh      — today's total kWh usage
 #   sensor.hot_tub_today_cost           — today's cost in pence
 #   sensor.hot_tub_week_cost            — this week's cost in pence
 #   sensor.hot_tub_month_cost           — this month's cost in pence
-#   binary_sensor.hot_tub_cheap_rate_active
-#   binary_sensor.hot_tub_peak_block_active
-#   binary_sensor.hot_tub_solar_sufficient
-#   binary_sensor.hot_tub_voltage_alert
 #
-# Temperature is provided directly by ESPHome:
+# Binary sensors (true/false flags):
+#   binary_sensor.hot_tub_cheap_rate_active  — are we in a cheap window?
+#   binary_sensor.hot_tub_peak_block_active  — are we in the 16-19 peak?
+#   binary_sensor.hot_tub_solar_sufficient   — is solar output high enough?
+#   binary_sensor.hot_tub_voltage_alert      — is mains voltage outside normal?
+#
+# Temperature comes directly from the ESPHome wall unit (not defined here):
 #   sensor.hottub_temperature_temperature
 #
-# Energy/cost tracking uses the dashboard's WebSocket history
-# calculator (calculateCosts in dashboard.html) which queries
-# sensor.appliance_hottub_energy directly from the HA recorder
-# and writes results to the hottub_*_kwh input_numbers.
-# This approach supports rolling 31-day history and accurate
-# tariff splits without dependency on HA uptime.
+# Cost tracking:
+#   The dashboard's JavaScript replays HA sensor history each time it
+#   loads, assigns each kWh to cheap/standard/peak/solar based on what
+#   hour it was consumed, and writes the totals back to the
+#   hottub_*_kwh input_numbers (defined in hottub_helpers.yaml).
+#   The cost sensors below then multiply those kWh figures by the
+#   configurable rates. This approach survives HA restarts and handles
+#   the month-boundary reset correctly.
 # ============================================================
 
 template:
   - sensor:
 
       # ── ELECTRICITY RATE ───────────────────────────────────
-      # Returns the current Octopus Cosy rate based on time of day.
-      # Cheap: 04:00-07:00 / 13:00-16:00 / 22:00-00:00
-      # Peak:  16:00-19:00
-      # Standard: all other times
+      # Returns the current Octopus Cosy tariff rate in pence per kWh.
+      # The tariff windows are:
+      #   Cheap:    04:00–07:00, 13:00–16:00, 22:00–00:00
+      #   Peak:     16:00–19:00  (most expensive — tub is blocked)
+      #   Standard: all other hours
+      #
+      # Attributes:
+      #   tariff     — "cheap", "peak", or "standard" (used by the dashboard)
+      #   next_change — human-readable label of the next tariff boundary
       - name: "Hot Tub Electricity Rate"
         unique_id: hot_tub_electricity_rate
         unit_of_measurement: "p/kWh"
@@ -50,10 +64,37 @@ template:
             {% if (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}cheap
             {% elif h >= 16 and h < 19 %}peak
             {% else %}standard{% endif %}
+          next_change: >
+            {% set h = now().hour %}
+            {% if h >= 0  and h < 4  %}04:00 → Cheap
+            {% elif h >= 4  and h < 7  %}07:00 → Standard
+            {% elif h >= 7  and h < 13 %}13:00 → Cheap
+            {% elif h >= 13 and h < 16 %}16:00 → Peak ⛔
+            {% elif h >= 16 and h < 19 %}19:00 → Standard
+            {% elif h >= 19 and h < 22 %}22:00 → Cheap
+            {% else %}00:00 → Standard{% endif %}
+
+      # ── TODAY TOTAL kWh ────────────────────────────────────
+      # Total energy consumed today (all tariff bands combined).
+      # Used by the 23:55 "daily store" automation so the 8AM
+      # notification can report yesterday's figures after the
+      # tariff-split kWh buckets have been cleared by a new day.
+      # Sums the four tariff buckets written by the dashboard.
+      - name: "Hot Tub Today Total kWh"
+        unique_id: hot_tub_today_total_kwh
+        unit_of_measurement: "kWh"
+        icon: mdi:lightning-bolt
+        state: >
+          {% set c    = states('input_number.hottub_today_cheap_kwh')    | float(0) %}
+          {% set s    = states('input_number.hottub_today_standard_kwh') | float(0) %}
+          {% set p    = states('input_number.hottub_today_peak_kwh')     | float(0) %}
+          {% set solar = states('input_number.hottub_today_solar_kwh')  | float(0) %}
+          {{ (c + s + p + solar) | round(3) }}
 
       # ── COST SENSORS ───────────────────────────────────────
-      # Computed from the tariff-split kWh input_numbers which
-      # are populated by the dashboard's history calculator.
+      # Multiply the kWh buckets (written by the dashboard) by
+      # the configurable tariff rates to produce a cost in pence.
+      # Divide by 100 in the UI to display as pounds.
       - name: "Hot Tub Today Cost"
         unique_id: hot_tub_today_cost
         unit_of_measurement: "p"
@@ -97,6 +138,8 @@ template:
   - binary_sensor:
 
       # ── CHEAP RATE ACTIVE ──────────────────────────────────
+      # True during the three Octopus Cosy cheap windows.
+      # The smart controller uses this to decide whether to heat.
       - name: "Hot Tub Cheap Rate Active"
         unique_id: hot_tub_cheap_rate_active
         device_class: power
@@ -106,6 +149,9 @@ template:
           {{ (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 }}
 
       # ── PEAK BLOCK ACTIVE ──────────────────────────────────
+      # True between 16:00 and 19:00. When true (and override is
+      # off), the smart controller forces the tub off regardless
+      # of any other conditions — peak electricity is ~38p/kWh.
       - name: "Hot Tub Peak Block Active"
         unique_id: hot_tub_peak_block_active
         device_class: safety
@@ -115,8 +161,9 @@ template:
           {{ h >= 16 and h < 19 }}
 
       # ── SOLAR SUFFICIENT ───────────────────────────────────
-      # True when solar production meets or exceeds the threshold.
-      # sensor.power_meter reports in kW; threshold is in W.
+      # True when the solar panels are producing enough to cover
+      # the tub's running load. sensor.power_meter reports in kW,
+      # so we multiply by 1000 to compare against the W threshold.
       - name: "Hot Tub Solar Sufficient"
         unique_id: hot_tub_solar_sufficient
         device_class: power
@@ -127,7 +174,10 @@ template:
           {{ solar_w >= threshold }}
 
       # ── VOLTAGE ALERT ──────────────────────────────────────
-      # Fires if the Zigbee plug reports voltage outside 210-250V.
+      # UK mains should be 230V ±10%, so 210–250V is normal.
+      # True if the Zigbee plug reports voltage outside that band.
+      # The plug must be reporting (v > 0) before the alert fires,
+      # so a missing/unavailable plug won't trigger a false alarm.
       - name: "Hot Tub Voltage Alert"
         unique_id: hot_tub_voltage_alert
         device_class: problem

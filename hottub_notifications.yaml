@@ -2,19 +2,27 @@
 # Hot Tub Control — Push Notifications
 # File: packages/hottub/hottub_notifications.yaml
 #
+# Sends iOS push notifications summarising energy use and cost.
+# All cost figures are stored in PENCE in HA (easier to work
+# with as integers). We divide by 100 here when formatting for
+# display so they appear as pounds (£) in the notification.
+#
 # ⚠️  Update notify.mobile_app_jasons_iphone to match your
-#     exact device name from Developer Tools → Services.
+#     device name — find it at Developer Tools → Services.
 #
 # Notifications:
-#   1. Daily 8AM  — yesterday's energy and cost
-#   2. Weekly Mon 8AM — week total + cost
-#   3. Monthly 1st 8AM — month total + cost
+#   1. Daily 8AM         — yesterday's energy and cost
+#   2. Weekly Mon 8AM    — week total + tariff split
+#   3. Monthly 1st 8AM   — month total + tariff split
 # ============================================================
 
 automation:
 
   # ══════════════════════════════════════════════════════════
   # 1. DAILY 8AM REPORT
+  # Reads yesterday's kWh and cost from the input_number helpers
+  # that were saved at 23:55 by hottub_store_daily_totals.
+  # hottub_yesterday_cost is stored in PENCE — divide by 100 for £.
   # ══════════════════════════════════════════════════════════
   - id: hottub_notify_daily
     alias: "Hot Tub — Daily Report (8AM)"
@@ -27,8 +35,8 @@ automation:
           title: "Hot Tub — Yesterday's Usage"
           message: >
             Energy: {{ states('input_number.hottub_yesterday_energy') | float(0) | round(2) }} kWh
-            Cost: {{ (states('input_number.hottub_yesterday_cost') | float(0) / 100) | round(2) }}p
-            Temp: {{ states('sensor.hottub_temperature_temperature') | float(0) | round(1) }}C
+            Cost: £{{ (states('input_number.hottub_yesterday_cost') | float(0) / 100) | round(2) }}
+            Temp: {{ states('sensor.hottub_temperature_temperature') | float(0) | round(1) }}°C
           data:
             push:
               sound: default
@@ -37,6 +45,9 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 2. WEEKLY REPORT (Monday 8AM)
+  # The 8AM time trigger fires every day — the condition
+  # "weekday() == 0" means Monday only (0=Mon … 6=Sun).
+  # Reads the per-tariff kWh buckets written by the dashboard.
   # ══════════════════════════════════════════════════════════
   - id: hottub_notify_weekly
     alias: "Hot Tub — Weekly Report (Mon 8AM)"
@@ -68,6 +79,8 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 3. MONTHLY REPORT (1st of month 8AM)
+  # Same pattern as weekly — triggers every day but only
+  # passes its condition on the 1st of each month.
   # ══════════════════════════════════════════════════════════
   - id: hottub_notify_monthly
     alias: "Hot Tub — Monthly Report (1st 8AM)"

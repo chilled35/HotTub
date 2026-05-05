@@ -2,7 +2,13 @@
 # Hot Tub Control — Core Automations
 # File: /config/packages/hottub/hottub_automations.yaml
 #
-# Automation index:
+# Automations are the "rules" that run automatically in response
+# to time or state changes. Each one has:
+#   trigger    — WHAT causes it to run (a time, or a state change)
+#   condition  — extra checks that must pass BEFORE the action runs
+#   action     — WHAT it actually does when triggered
+#
+# Index:
 #   1.  hottub_cheap_rate_on          Powers on at start of each cheap window
 #   2.  hottub_cheap_rate_off         Powers off at end of each cheap window
 #   3.  hottub_peak_block_on          Force off at 16:00 peak start
@@ -17,20 +23,28 @@
 # MASTER GATE: input_boolean.hottub_schedule_enabled
 #   All automations that power the tub ON check this first.
 #   Turn it OFF when the tub is empty or being serviced.
-#   Override (automations 4, 9, 10) is intentionally EXEMPT.
+#   Manual override (automations 4, 9, 10) is intentionally EXEMPT —
+#   if you choose to override you presumably know what you're doing.
+#
+# HOW THE SMART CONTROLLER RELATES TO AUTOMATIONS 1–3:
+#   Automations 1–3 are "belt and braces" — the smart controller
+#   (automation 7) already handles these transitions because it
+#   reacts to the cheap_rate and peak_block binary sensor changes.
+#   Automations 1–3 add logbook entries and an extra condition
+#   check as an explicit fallback.
 #
 # OVERRIDE FLOW (D1 Mini touch sensor):
 #   Touch tap on D1 Mini
 #     → switch.hottub_temperature_manual_override (ESPHome)
-#       → hottub_esphome_override_on (bridge)
-#         → input_boolean.hottub_in_use_override
-#           → hottub_override_start
+#       → hottub_esphome_override_on (bridge, automation 9)
+#         → input_boolean.hottub_in_use_override = ON
+#           → hottub_override_start (automation 4)
 #             → switch.appliance_hottub ON + timer starts
 #   Timer expires / 4th tap cancels on D1 Mini
 #     → switch.hottub_temperature_manual_override OFF
-#       → hottub_esphome_override_off (bridge)
-#         → input_boolean.hottub_in_use_override OFF
-#           → switch.appliance_hottub OFF (if not in cheap window)
+#       → hottub_esphome_override_off (bridge, automation 10)
+#         → input_boolean.hottub_in_use_override = OFF
+#           → smart controller re-evaluates, turns tub off if outside cheap/solar
 # ============================================================
 
 automation:
@@ -273,16 +287,20 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 6. TARIFF SWITCHER
-  # Switches utility meter active tariff at each Cosy boundary.
-  # Also runs on HA startup so costs track correctly after restart.
+  # Switches the active tariff on HA utility meter entities at
+  # each Cosy boundary so the built-in energy dashboard can
+  # split consumption by rate.
   #
-  # Cosy schedule:
-  #   00:00 → standard
-  #   04:00 → cheap
-  #   07:00 → standard
-  #   13:00 → cheap
-  #   16:00 → peak
-  #   19:00 → standard
+  # ⚠️  OPTIONAL — only needed if you have utility meters configured
+  # in your HA energy dashboard. The entities targeted here
+  # (select.hottub_energy_daily/weekly/monthly) are created by
+  # a utility_meter platform config block, NOT defined in this
+  # package. If you haven't set up utility meters, this automation
+  # runs harmlessly and silently does nothing.
+  #
+  # Cosy boundaries → tariff:
+  #   00:00 → standard  |  04:00 → cheap  |  07:00 → standard
+  #   13:00 → cheap     |  16:00 → peak   |  19:00 → standard
   #   22:00 → cheap
   # ══════════════════════════════════════════════════════════
   - id: hottub_tariff_switcher
@@ -290,6 +308,7 @@ automation:
     description: >
       Switches utility meter tariff at each Cosy period boundary
       and on HA startup so costs are always tracked at the correct rate.
+      Requires utility_meter entities — harmless no-op if absent.
     mode: single
 
     trigger:
@@ -342,13 +361,21 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 7. SMART HEATING CONTROLLER (PRIORITY CASCADE)
-  # Runs every 5 min and on key state changes.
-  # Priority order:
-  #   1. Peak Block (16:00–19:00) — force OFF unless override active
-  #   2. Override ON              — force ON
-  #   3. Solar sufficient         — turn ON (free energy)
-  #   4. Cheap rate active        — turn ON (low cost window)
-  #   6. Default                  — turn OFF
+  # This is the brain of the system. It runs every 5 minutes
+  # and whenever a key condition changes (cheap rate starts/ends,
+  # solar crosses the threshold, override is toggled, etc.).
+  #
+  # It evaluates conditions top-to-bottom; the first match wins:
+  #   1. Master gate OFF             — turn OFF (schedule disabled)
+  #   2. Peak Block (16:00–19:00)    — force OFF (override exempt)
+  #   3. Override ON                 — force ON
+  #   4. Solar sufficient            — turn ON (free energy)
+  #   5. Cheap rate active           — turn ON (low cost window)
+  #   Default                        — turn OFF
+  #
+  # "mode: single / max_exceeded: silent" means if the automation
+  # is already running when it fires again (e.g. rapid state
+  # changes), extra triggers are silently dropped — no queuing.
   # ══════════════════════════════════════════════════════════
   - id: hottub_smart_controller
     alias: "Hot Tub — Smart Heating Controller"
@@ -363,6 +390,11 @@ automation:
         event: start
       - platform: time_pattern
         minutes: "/5"
+      - platform: state
+        entity_id: input_boolean.hottub_schedule_enabled
+        not_to:
+          - unavailable
+          - unknown
       - platform: state
         entity_id: input_boolean.hottub_in_use_override
         not_to:
@@ -388,6 +420,9 @@ automation:
 
     action:
       - variables:
+          # Snapshot all relevant states once into variables so the
+          # choose block below can compare them without repeated lookups.
+          sched_on:       "{{ is_state('input_boolean.hottub_schedule_enabled', 'on') }}"
           override:       "{{ is_state('input_boolean.hottub_in_use_override', 'on') }}"
           peak_block:     "{{ is_state('binary_sensor.hot_tub_peak_block_active', 'on') }}"
           cheap_rate:     "{{ is_state('binary_sensor.hot_tub_cheap_rate_active', 'on') }}"
@@ -397,7 +432,25 @@ automation:
 
       - choose:
 
+          # ── PRIORITY 0: MASTER GATE ────────────────────────
+          # If the global schedule switch is off, stop everything.
+          # Override is still allowed (handled after this check).
+          - conditions:
+              - condition: template
+                value_template: "{{ not sched_on and not override }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.appliance_hottub
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.hottub_control_mode
+                data:
+                  option: "Off"
+
           # ── PRIORITY 1: PEAK BLOCK (override exempt) ───────
+          # Hard block during 16:00–19:00. A conscious override
+          # still works — the user has knowingly accepted the cost.
           - conditions:
               - condition: template
                 value_template: "{{ peak_block and not override }}"
@@ -467,9 +520,12 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 8. STORE DAILY TOTALS (23:55)
-  # Snapshots today's energy and cost into input_number helpers
-  # so the 8AM notification can report yesterday's figures
-  # after the utility meters reset at midnight.
+  # Snapshots today's energy and cost 5 minutes before midnight
+  # so the 8AM notification can report "yesterday's" figures
+  # even after the tariff kWh buckets reset for the new day.
+  # sensor.hot_tub_today_total_kwh (defined in hottub_sensors.yaml)
+  # sums the four tariff buckets populated by the dashboard.
+  # sensor.hot_tub_today_cost multiplies those kWh by the rates.
   # ══════════════════════════════════════════════════════════
   - id: hottub_store_daily_totals
     alias: "Hot Tub — Store Daily Totals (23:55)"

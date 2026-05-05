@@ -936,13 +936,38 @@
 
 <script>
 // ============================================================
-// CONFIGURATION
-// Loaded from localStorage (set via the setup screen).
+// HOW THIS DASHBOARD WORKS
+//
+// This is a self-contained HTML file — no server, no framework.
+// It talks to Home Assistant over a WebSocket (a persistent
+// two-way connection) so state changes push to the page in
+// real time without polling.
+//
+// Startup sequence:
+//   1. Read HA URL + token from browser localStorage
+//   2. Open WebSocket to <ha-url>/api/websocket
+//   3. Authenticate with the long-lived access token
+//   4. Fetch all entity states at once, then subscribe to
+//      state_changed events for live updates going forward
+//   5. Run calculateCosts() to replay HA's energy history
+//      and compute tariff-split kWh for today / week / month
+//
+// Energy cost data flow:
+//   HA recorder history ──► calculateCosts()
+//     ─► per-tariff kWh written to input_number entities in HA
+//       ─► HA template sensors multiply by rates → cost sensors
+//         ─► dashboard reads cost sensors and displays them
 // ============================================================
+
+// ── CONFIGURATION ─────────────────────────────────────────
+// Loaded from localStorage (set on the setup screen).
+// Stored in the browser — never sent to any third party.
 let HA_URL   = localStorage.getItem('ha_url')   || '';
 let HA_TOKEN = localStorage.getItem('ha_token') || '';
 
 // ── ENTITY IDS ────────────────────────────────────────────
+// Central lookup table of every HA entity this dashboard touches.
+// Keeping them here means renaming an entity is a one-line change.
 const E = {
   temp:             'sensor.hottub_temperature_temperature',
   tempReal:         'sensor.hottub_temperature_temperature',
@@ -989,18 +1014,22 @@ const E = {
 };
 
 // ── STATE ─────────────────────────────────────────────────
-let ws = null;
-let msgId = 1;
-let callbacks = {};
-let states = {};
-let activeTab = 'daily';
+// Runtime variables that change as the dashboard runs.
+let ws = null;           // the active WebSocket connection
+let msgId = 1;           // auto-incrementing ID for WS messages
+let callbacks = {};      // pending response handlers keyed by msgId
+let states = {};         // latest known state for every HA entity
+let activeTab = 'daily'; // which energy period tab is selected
 let reconnectTimer = null;
-let timerInterval = null;
+let timerInterval = null; // setInterval handle for the override countdown
 
-// Energy bar reference values (kWh / £ per period for scaling)
+// Maximum kWh / £ values used to scale the energy progress bars.
+// Adjust if your tub's consumption regularly exceeds these.
 const BAR_MAX = { daily: [10, 3], weekly: [70, 20], monthly: [300, 90] };
 
 // ── MODE DESCRIPTIONS ─────────────────────────────────────
+// Human-readable explanation for each control mode, shown below
+// the mode badge on the dashboard.
 const MODE_DESC = {
   'Solar':           '☀️ Solar production is above threshold. Heating with free energy.',
   'Cheap Rate':      '⚡ Cheap rate window active (Cosy). Heating at low cost.',
@@ -1012,6 +1041,10 @@ const MODE_DESC = {
 };
 
 // ── SETUP ─────────────────────────────────────────────────
+// Handles the first-run setup screen where the user enters
+// their HA URL and long-lived access token. Credentials are
+// stored in localStorage (browser-side only) and never leave
+// the device.
 function saveSetup() {
   const url   = document.getElementById('ha-url').value.trim().replace(/\/$/, '');
   const token = document.getElementById('ha-token').value.trim();
@@ -1038,8 +1071,14 @@ function clearSetup() {
 }
 
 // ── WEBSOCKET ─────────────────────────────────────────────
+// Home Assistant's WebSocket API lets us get real-time updates
+// without polling. The flow is:
+//   connect → HA sends "auth_required" → we send our token
+//   → HA sends "auth_ok" → we fetch all states + subscribe to changes
+// If the connection drops, we retry every 5 seconds.
 function connect() {
   setConnStatus('connecting', 'Connecting');
+  // Convert http(s):// URL to ws(s):// for the WebSocket protocol
   const wsUrl = HA_URL.replace('https://', 'wss://').replace('http://', 'ws://') + '/api/websocket';
   ws = new WebSocket(wsUrl);
 
@@ -1099,6 +1138,7 @@ function handleMsg(msg) {
   }
 }
 
+// Convenience helpers — return safe defaults when an entity is missing.
 function getState(id)     { return states[id]?.state ?? 'unavailable'; }
 function getAttr(id, a)   { return states[id]?.attributes?.[a]; }
 function getFloat(id, fb) { return parseFloat(getState(id)) || (fb ?? 0); }
@@ -1177,8 +1217,7 @@ function renderSchedule() {
 }
 
 function toggleBool(entityId, btnId) {
-  const isOn = getState('input_boolean.' + entityId.replace('input_boolean.','')) === 'on'
-            || getState('input_boolean.' + entityId) === 'on';
+  // Normalise the entity ID — accept with or without the domain prefix.
   const id = entityId.startsWith('input_boolean.') ? entityId : 'input_boolean.' + entityId;
   const on = getState(id) === 'on';
   send({
@@ -1324,7 +1363,9 @@ function renderMode() {
   const mode = getState(E.mode);
   const badge = document.getElementById('mode-badge');
   document.getElementById('mode-text').textContent = mode;
-  badge.className = 'mode-badge ' + mode.replace(' ', '-').replace(' ', '-');
+  // CSS class names can't contain spaces — replace all spaces with hyphens.
+  // e.g. "Cheap Rate" → "Cheap-Rate", "Peak Block" → "Peak-Block"
+  badge.className = 'mode-badge ' + mode.replaceAll(' ', '-');
   document.getElementById('mode-desc').textContent = MODE_DESC[mode] || '';
 }
 
@@ -1371,7 +1412,8 @@ function renderSolar() {
 // ── RATE ──────────────────────────────────────────────────
 function renderRate() {
   const rate   = getFloat(E.rate, 0);
-  const period = getAttr(E.rate, 'period') || 'standard';
+  // Attribute is named "tariff" in hottub_sensors.yaml — must match exactly.
+  const period = getAttr(E.rate, 'tariff') || 'standard';
   const next   = getAttr(E.rate, 'next_change') || '—';
 
   const clrMap = { cheap: 'var(--cheap)', peak: 'var(--peak)', standard: 'var(--override)' };
@@ -1387,21 +1429,25 @@ function renderRate() {
 }
 
 // ── ENERGY ────────────────────────────────────────────────
+// Shows energy and cost for the selected period (today/week/month).
+// The per-tariff kWh values are written by calculateCosts() and
+// stored in HA input_number entities. Cost sensors in HA multiply
+// these by the configured rates and we read the result back here.
 function renderEnergy() {
-  const t   = activeTab;
-  const T   = t.charAt(0).toUpperCase() + t.slice(1);
-  const raw = getFloat(E.energyRaw, 0);
-
-  const snap    = getFloat(E['snap' + T === 'snapDaily' ? 'snapMidnight' : 'snap' + T], 0);
-  const snapMap = { daily: E.snapMidnight, weekly: E.snapWeek, monthly: E.snapMonth };
-  const totalKwh = Math.max(raw - getFloat(snapMap[t], 0), 0);
+  const t = activeTab;
+  // Capitalise first letter to build dynamic key names like "energyDailyCheap"
+  const T = t.charAt(0).toUpperCase() + t.slice(1);
 
   const cheapKwh  = getFloat(E['energy' + T + 'Cheap'],  0);
-  const stdKwh    = getFloat(E['energy' + T + 'Std'],    0);
-  const peakKwh   = getFloat(E['energy' + T + 'Peak'],   0);
-  const solarKwh  = getFloat(E['energy' + T + 'Solar'],  0);
-  const costP     = getFloat(E['cost'   + T],             0);
+  const stdKwh   = getFloat(E['energy' + T + 'Std'],   0);
+  const peakKwh  = getFloat(E['energy' + T + 'Peak'],  0);
+  const solarKwh = getFloat(E['energy' + T + 'Solar'], 0);
+  const costP    = getFloat(E['cost' + T],              0);
   const costGBP  = (costP / 100).toFixed(2);
+
+  // Total kWh for the period = sum of all four tariff buckets.
+  // These are populated by calculateCosts() every 5 minutes.
+  const totalKwh = cheapKwh + stdKwh + peakKwh + solarKwh;
 
   document.getElementById('cost-display').textContent = '£' + costGBP;
   document.getElementById('cost-sub').textContent     = totalKwh.toFixed(2) + ' kWh consumed';
@@ -1511,37 +1557,51 @@ function showSetupError(msg) {
 
 
 // ── COST CALCULATION FROM HISTORY ─────────────────────────
-// Queries the HA history (states table) directly via WebSocket.
-// Computes tariff split by iterating state changes and assigning
-// each energy delta to cheap / standard / peak based on the
-// local hour the reading was recorded.
-// Results are written to input_numbers for use by cost sensors
-// and the 8AM notification.
-// Runs on connection + every 30 minutes.
+// This is the most complex part of the dashboard. Home Assistant
+// stores every state change in a database (the "recorder"). We
+// query that history for the energy meter, solar output, and pump
+// wattage, then replay those readings to work out:
+//   - How many kWh were used in each tariff window (cheap/std/peak)
+//   - How many kWh were covered by solar (no grid cost)
+//
+// Why do this in the browser rather than in HA automations?
+//   HA's built-in statistics reset at midnight and month boundaries,
+//   which causes a brief period of incorrect readings. By querying
+//   a rolling 31-day window and computing totals ourselves, we
+//   avoid that reset bug entirely and survive HA restarts.
+//
+// Results are written back to HA input_number entities, which
+// the template sensors (hottub_sensors.yaml) read to produce the
+// cost figures. The 23:55 automation also reads from those sensors.
+//
+// Runs once on connection, then every 5 minutes.
 
-let costCalcInterval = null;
-let monthlyTimeline = null;
-let monthlyFirst = null;
-let monthlyEnergySeries = null;
-let weeklyTimeline = null;
-let weeklyMon = null;
+let costCalcInterval    = null;
+let monthlyTimeline     = null;  // pre-built timeline for the rolling 31-day window
+let monthlyFirst        = null;  // Date: start of the rolling 31-day window
+let monthlyEnergySeries = null;  // raw energy readings for the rolling window
+let weeklyTimeline      = null;  // pre-built timeline for the current week
+let weeklyMon           = null;  // Date: Monday midnight of current week
 
 function startCostCalculation() {
   clearInterval(costCalcInterval);
   calculateCosts();
-  costCalcInterval = setInterval(calculateCosts, 5 * 60 * 1000);
+  costCalcInterval = setInterval(calculateCosts, 5 * 60 * 1000); // every 5 minutes
 }
 
+// Returns midnight at the start of the current calendar week (Monday).
 function getMondayMidnight() {
   const now = new Date();
   const day = now.getDay();                      // 0=Sun … 6=Sat
-  const daysBack = day === 0 ? 6 : day - 1;     // days to go back to Monday
+  const daysBack = day === 0 ? 6 : day - 1;     // days back to reach Monday
   const d = new Date(now);
   d.setDate(d.getDate() - daysBack);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
+// Maps a local hour (0–23) to the Octopus Cosy tariff band name.
+// Must match the logic in hottub_sensors.yaml exactly.
 function tariffForHour(h) {
   if ((h >= 4 && h <= 6) || (h >= 13 && h <= 15) || h >= 22) return 'cheap';
   if (h >= 16 && h <= 18) return 'peak';
@@ -1549,17 +1609,19 @@ function tariffForHour(h) {
 }
 
 // ── TIMESTAMP HELPER ─────────────────────────────────────
+// HA's minimal_response format uses compact keys (lc/lu) instead of
+// the verbose last_changed/last_updated. This helper handles both.
 function getTs(r) {
   const raw = r.lc ?? r.lu ?? r.last_changed ?? r.last_updated;
   if (raw == null) return null;
-  const t = typeof raw === 'number'
-    ? new Date(raw * 1000)
-    : new Date(raw);
+  // HA may send timestamps as Unix seconds (number) or ISO strings
+  const t = typeof raw === 'number' ? new Date(raw * 1000) : new Date(raw);
   return isNaN(t.getTime()) ? null : t;
 }
 
-// Returns local midnight as a Date — correctly handles DST/BST so day
-// boundary comparisons against UTC timestamps work in all timezones.
+// Returns local midnight for a given Date, respecting DST/BST.
+// Using setHours(0,0,0,0) applies the local timezone offset, which
+// ensures day-boundary comparisons work correctly year-round.
 function localMidnight(d) {
   const r = new Date(d);
   r.setHours(0, 0, 0, 0);
@@ -1567,6 +1629,9 @@ function localMidnight(d) {
 }
 
 // ── PARSE SENSOR HISTORY ──────────────────────────────────
+// Converts the raw HA history response array into a clean
+// [{t: Date, v: number}] array, sorted oldest-first.
+// Non-numeric states (e.g. "unavailable") are silently skipped.
 function parseSeries(hist) {
   const out = [];
   for (const r of (hist || [])) {
@@ -1579,34 +1644,37 @@ function parseSeries(hist) {
 }
 
 // ── COMPUTE SPLIT ─────────────────────────────────────────
-// Simple carry-forward approach — for each energy delta,
-// use the last known solar and power values at that timestamp.
-function computeSplit(timeline, periodStart) {
+// Iterates a pre-built timeline and assigns each kWh delta to
+// cheap / standard / peak / solar based on:
+//   - the hour the energy was recorded (→ tariff band)
+//   - the solar output at that moment (→ solar fraction)
+//
+// t1: only count deltas AFTER this timestamp (period start)
+// t2: stop counting after this timestamp (optional — if omitted,
+//     processes to the end of the timeline)
+//
+// "Carry-forward" approach: when there's no solar/power reading
+// at an exact energy timestamp, we use the most recent reading
+// we've seen so far (last known value carries forward).
+function computeSplit(timeline, t1, t2 = null) {
   const b = { cheap: 0, standard: 0, peak: 0, solar: 0 };
   let prevEnergy = null, prevT = null;
   const threshold = getFloat(E.solarThreshold, 2000);
 
   for (const pt of timeline) {
-    if (pt.t <= periodStart) {
-      prevEnergy = pt.energy;
-      prevT      = pt.t;
-      continue;
-    }
+    if (pt.t < t1) { prevEnergy = pt.energy; prevT = pt.t; continue; }
+    if (t2 !== null && pt.t > t2) break;
 
     if (prevEnergy !== null && prevT !== null) {
       const deltaKwh = Math.max(pt.energy - prevEnergy, 0);
       if (deltaKwh > 0) {
         const tubW   = pt.tubW   ?? 0;
         const solarW = pt.solarW ?? 0;
-
-        let solarFrac;
-        if (tubW > 0) {
-          solarFrac = Math.min(solarW / tubW, 1);
-        } else {
-          solarFrac = solarW >= threshold ? 1 : 0;
-        }
-
-        const gridFrac = 1 - solarFrac;
+        // Solar fraction: proportion of the tub's draw covered by solar.
+        // If we have live watt readings, use them; otherwise fall back to
+        // a binary check (solar output above/below threshold).
+        const solarFrac = tubW > 0 ? Math.min(solarW / tubW, 1) : (solarW >= threshold ? 1 : 0);
+        const gridFrac  = 1 - solarFrac;
         b.solar += deltaKwh * solarFrac;
         if (gridFrac > 0) {
           b[tariffForHour(pt.t.getHours())] += deltaKwh * gridFrac;
@@ -1632,16 +1700,18 @@ function calculateCosts() {
   const mon   = getMondayMidnight();
   const first = new Date(now); first.setDate(1); first.setHours(0, 0, 0, 0);
 
-  // Query each period with its own tight window.
-  // solar updates every 10s — querying months of it kills the WebSocket.
-  // Each period gets: energy from 1hr before start (for baseline),
-  // solar+power from period start only (minimise records).
-  // Monthly uses a rolling 31-day window so the daily breakdown always has
-  // enough history regardless of where we are in the calendar month.
+  // Rolling 31-day window instead of "start of month" so the daily
+  // breakdown always has a full 7 days visible regardless of where
+  // we are in the calendar month, and avoids the midnight-reset bug
+  // where the new month briefly shows zero before history catches up.
   const rolling31 = new Date(now.getTime() - 31 * 24 * 3_600_000);
+
+  // Each period queries a 1-hour pre-buffer before its start so we
+  // always have a baseline energy reading to compute the first delta
+  // from (the tub may not have changed state exactly at midnight/Monday).
   const periods = [
-    { key: 'daily',   start: today,     energyStart: new Date(today.getTime()    - 3_600_000) },
-    { key: 'weekly',  start: mon,       energyStart: new Date(mon.getTime()      - 3_600_000) },
+    { key: 'daily',   start: today,     energyStart: new Date(today.getTime()     - 3_600_000) },
+    { key: 'weekly',  start: mon,       energyStart: new Date(mon.getTime()       - 3_600_000) },
     { key: 'monthly', start: rolling31, energyStart: new Date(rolling31.getTime() - 3_600_000) },
   ];
 
@@ -1656,9 +1726,9 @@ function calculateCosts() {
 
   for (const p of periods) {
     (function(period) {
-      // Monthly only needs energy — solar/power queries for a full month
-      // are too large (200k+ records) and kill the WebSocket.
-      // Daily breakdown uses energy-only boundary differences.
+      // Monthly queries energy only — solar updates every 10 s, so fetching
+      // 31 days of it produces hundreds of thousands of records and can
+      // stall the WebSocket. Daily/weekly are short enough to be safe.
       const monthlyOnly = period.key === 'monthly';
       let r = {}, pending = monthlyOnly ? 1 : 3;
       function got(k, v) { r[k] = v; pending--; if (pending === 0) onPeriodComplete(period.key, r.energy, r.power || [], r.solar || []); }
@@ -1691,17 +1761,24 @@ function calculateCosts() {
     })(p);
   }
 
+  // Merges the three raw history series into a single timeline of
+  // [{t, energy, tubW, solarW}] points sorted by time.
+  // The carry-forward technique (pi/si pointer scan) ensures each
+  // energy reading is paired with the most recent power/solar value
+  // without requiring them to share exact timestamps.
   function buildPeriodTimeline(energy, power, solar, periodStart) {
     const energySeries = parseSeries(energy);
     const powerSeries  = parseSeries(power);
+    // Solar sensor reports kW — convert to W to match the wattage threshold
     const solarSeries  = (solar || [])
       .map(r => { const t = getTs(r); const v = parseFloat(r.s); return (t && !isNaN(v)) ? { t, v: v * 1000 } : null; })
       .filter(Boolean)
       .sort((a, b) => a.t - b.t);
 
-    // Find the last energy reading AT OR BEFORE periodStart to use as baseline.
-    // This ensures the first delta after period start is correctly calculated
-    // even if the tub was off (no readings) just before the period began.
+    // Find the last energy reading AT OR BEFORE periodStart — this becomes
+    // the baseline from which we compute the first delta. Without it, any
+    // energy consumed between the true period start and the first recorded
+    // reading would be silently lost.
     let baseline = null;
     for (const e of energySeries) {
       if (e.t <= periodStart) baseline = e;
@@ -1711,13 +1788,13 @@ function calculateCosts() {
     let tubW = 0, solarW = 0, pi = 0, si = 0;
     const timeline = [];
 
-    // Insert baseline point at period start so first delta is correct
     if (baseline) {
       timeline.push({ t: periodStart, energy: baseline.v, tubW: 0, solarW: 0 });
     }
 
     for (const e of energySeries) {
-      if (e.t <= periodStart) continue; // skip pre-period readings
+      if (e.t <= periodStart) continue; // skip pre-period readings used only for baseline
+      // Advance power and solar pointers to the latest reading at or before this energy point
       while (pi < powerSeries.length && powerSeries[pi].t  <= e.t) { tubW   = powerSeries[pi].v;  pi++; }
       while (si < solarSeries.length && solarSeries[si].t  <= e.t) { solarW = solarSeries[si].v; si++; }
       timeline.push({ t: e.t, energy: e.v, tubW, solarW });
@@ -1725,17 +1802,24 @@ function calculateCosts() {
     return timeline;
   }
 
+  // Called once all three period queries complete. Computes tariff splits,
+  // writes results to HA, then triggers a UI refresh.
   function finalise() {
     const dt = buildPeriodTimeline(results.daily.energy,   results.daily.power,   results.daily.solar,   today);
     const wt = buildPeriodTimeline(results.weekly.energy,  results.weekly.power,  results.weekly.solar,  mon);
     const mt = buildPeriodTimeline(results.monthly.energy, results.monthly.power, results.monthly.solar, rolling31);
 
-    // Only compute tariff splits if we have daily data
+    // Need at least 2 points to compute a delta; guard against empty history
     if (dt.length >= 2) {
       const d = computeSplit(dt, today);
       const w = computeSplit(wt, mon);
+      // Monthly split uses calendar month start (first), not the rolling31 window,
+      // so the "this month" cost figure matches what you'd see on your bill.
       const m = computeSplit(mt, first);
 
+      // Write results back to HA. We also update the local states cache so
+      // renderEnergy() sees the new values immediately without waiting for
+      // the WebSocket state_changed event to come back.
       const patch = {
         'input_number.hottub_today_cheap_kwh':    d.cheap,
         'input_number.hottub_today_standard_kwh': d.standard,
@@ -1758,20 +1842,26 @@ function calculateCosts() {
       }
     }
 
-    // Always store monthly data for daily breakdown display
-    monthlyTimeline = mt;
-    monthlyFirst = rolling31;
+    // Keep timelines in module scope so renderDailyBreakdown() can use them
+    monthlyTimeline     = mt;
+    monthlyFirst        = rolling31;
     monthlyEnergySeries = parseSeries(results.monthly.energy);
-    weeklyTimeline = wt;
-    weeklyMon = mon;
+    weeklyTimeline      = wt;
+    weeklyMon           = mon;
     renderEnergy();
     renderDailyBreakdown();
   }
 }
 
 // ── DAILY BREAKDOWN ───────────────────────────────────────
-// Computes kWh per day for the last 7 days from the monthly
-// timeline. Shows in reverse order (yesterday first).
+// Shows the last 7 days of usage, one row per day.
+// For days within the current week we use the weekly timeline
+// (which includes solar/power data, so tariff splits are accurate).
+// For older days we fall back to the monthly timeline, which only
+// has raw energy readings — tariff splits are still computed but
+// solar attribution is less precise without live wattage data.
+// The blendedRate is only used for the rough kWh→cost estimate in
+// the initial row build; the final trueCost comes from computeSplit.
 function renderDailyBreakdown() {
   const container = document.getElementById('daily-breakdown-rows');
   const wrapper   = document.getElementById('daily-breakdown');
@@ -1779,8 +1869,6 @@ function renderDailyBreakdown() {
   wrapper.style.display = 'block';
 
   const series = monthlyEnergySeries;
-  if (series && series.length > 0) {
-  }
   if (!series || series.length === 0) {
     container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No data available yet</div>';
     return;
@@ -1824,7 +1912,7 @@ function renderDailyBreakdown() {
                ? weeklyTimeline : monthlyTimeline;
 
     if (tl && r.kwh > 0) {
-      const split = computeSplitBetween(tl, r.dayStart, r.dayEnd);
+      const split = computeSplit(tl, r.dayStart, r.dayEnd);
       cheapKwh  = split.cheap;
       stdKwh    = split.standard;
       peakKwh   = split.peak;
@@ -1861,39 +1949,18 @@ function renderDailyBreakdown() {
   }).join('');
 }
 
-// computeSplit between two specific timestamps (not just from a periodStart to end)
-function computeSplitBetween(timeline, t1, t2) {
-  const b = { cheap: 0, standard: 0, peak: 0, solar: 0 };
-  const threshold = getFloat(E.solarThreshold, 2000);
-  let prevEnergy = null, prevT = null;
-
-  for (const pt of timeline) {
-    if (pt.t < t1) { prevEnergy = pt.energy; prevT = pt.t; continue; }
-    if (pt.t > t2) break;
-    if (prevEnergy !== null && prevT !== null) {
-      const deltaKwh = Math.max(pt.energy - prevEnergy, 0);
-      if (deltaKwh > 0) {
-        const tubW   = pt.tubW   ?? 0;
-        const solarW = pt.solarW ?? 0;
-        const solarFrac = tubW > 0 ? Math.min(solarW / tubW, 1) : (solarW >= threshold ? 1 : 0);
-        const gridFrac  = 1 - solarFrac;
-        b.solar += deltaKwh * solarFrac;
-        if (gridFrac > 0) b[tariffForHour(pt.t.getHours())] += deltaKwh * gridFrac;
-      }
-    }
-    prevEnergy = pt.energy; prevT = pt.t;
-  }
-  return b;
-}
-
 // ── INIT ──────────────────────────────────────────────────
+// Entry point — runs once the HTML is fully parsed.
+// If credentials exist in localStorage, skip the setup screen
+// and connect immediately. Otherwise show the setup screen and
+// pre-fill the URL field with the current page's origin (which
+// is the HA address when the file is served from /local/).
 window.addEventListener('DOMContentLoaded', () => {
   if (HA_URL && HA_TOKEN) {
     document.getElementById('setup-screen').classList.add('hidden');
     document.getElementById('app').classList.add('ready');
     connect();
   } else {
-    // Pre-fill URL from current origin if accessed via HA
     const url = document.getElementById('ha-url');
     if (!url.value) url.value = window.location.origin;
   }

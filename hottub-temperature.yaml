@@ -41,20 +41,27 @@ esp8266:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  # Static IP avoids DHCP churn and keeps the HA integration stable.
   manual_ip:
     static_ip: 192.168.0.38
     gateway: 192.168.0.1
     subnet: 255.255.0.0
+  # Fallback hotspot — if the D1 Mini can't reach the main WiFi it
+  # creates its own AP so you can still connect and diagnose it.
   ap:
     ssid: "Hottub Fallback"
-    password: "fallbackpass"
+    password: !secret esp_fallback_password   # add to secrets.yaml
 
+# captive_portal: shows a config page when connected to the fallback AP
 captive_portal:
+# logger: streams debug output over USB / network for troubleshooting
 logger:
+# api: enables the native Home Assistant integration (no MQTT needed)
 api:
+# ota: enables wireless firmware updates — password protects the endpoint
 ota:
   platform: esphome
-  password: "e5265aaa098ec02bdeb7155d0a2dc7bc"
+  password: !secret ota_password   # add to secrets.yaml
 
 # ── Time (from Home Assistant — no internet lookup needed) ───────────────────
 time:
@@ -79,18 +86,24 @@ one_wire:
         pullup: true
 
 # ── Globals ───────────────────────────────────────────────────────────────────
+# Global variables persist across lambda (C++) calls within one power cycle.
+# "restore_value: false" means they reset to initial_value on reboot —
+# intentional here so a reboot cancels any active override cleanly.
 globals:
-  # Remaining override time in seconds (0 = inactive)
+  # Counts down from 1800/3600/5400 seconds to zero. Zero means inactive.
   - id: override_seconds
     type: int
     restore_value: false
     initial_value: '0'
-  # Tap counter (0-3); 4th tap cancels
+  # How many times the button has been tapped in the current override session.
+  # Tap 1=30min, Tap 2=60min, Tap 3=90min (max), Tap 4=cancel.
   - id: tap_count
     type: int
     restore_value: false
     initial_value: '0'
-  # Tracks whether override was active last tick — prevents spamming turn_off every second in standby
+  # Remembers whether override was active on the previous 1-second tick.
+  # Lets us detect the exact moment the countdown transitions to zero
+  # so we only trigger the "override ended" action once, not every second.
   - id: override_was_active
     type: bool
     restore_value: false
@@ -157,6 +170,11 @@ binary_sensor:
     lambda: 'return id(override_seconds) > 0;'
 
 # ── Countdown: decrement every second while active ────────────────────────────
+# This interval fires every second and is the heartbeat of the override logic.
+# It decrements the countdown and keeps the OLED display ticking.
+# The override_active_sensor (binary_sensor below) derives its state from
+# override_seconds, so when it hits zero the sensor flips to OFF, which
+# Home Assistant detects and triggers the "override off" bridge automation.
 interval:
   - interval: 1s
     then:
@@ -167,20 +185,21 @@ interval:
           if (is_active) {
             id(override_seconds) -= 1;
             if (id(override_seconds) == 0) {
-              id(tap_count) = 0;
+              id(tap_count) = 0;  // reset tap counter when countdown expires
             }
           }
 
-          // Only fire turn_off ONCE — on the tick the countdown transitions active→expired
-          // This prevents spamming HA with turn_off every second while in standby
+          // Track transition: active → expired.
+          // We only want to react once at the exact tick when the countdown
+          // reaches zero, not on every subsequent idle tick.
           if (was_active && id(override_seconds) == 0) {
             id(override_was_active) = false;
           } else if (is_active) {
             id(override_was_active) = true;
           }
 
-      # override_active_sensor lambda re-evaluates automatically each second.
-      # HA automation watches its state change — no service call needed here.
+      // override_active_sensor re-evaluates its lambda each second automatically.
+      // HA watches the resulting state change — no explicit service call needed.
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 # ConsiderMeVexed by Chequered Ink — not on Google Fonts, must be local.
