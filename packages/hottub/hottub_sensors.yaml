@@ -1,12 +1,14 @@
 # ============================================================
-# Hot Tub Control — Template Sensors & Binary Sensors
+# Hot Tub Control — Template Sensors, Binary Sensors & Utility Meters
 # File: packages/hottub/hottub_sensors.yaml
 #
-# "Template sensors" are virtual sensors whose value is computed
-# from a Jinja2 formula each time HA evaluates them. They don't
-# measure anything directly — they calculate from other entities.
+# Utility meters (server-side, always accurate):
+#   sensor.hottub_energy_daily_cheap/standard/peak/solar   — kWh today per tariff
+#   sensor.hottub_energy_weekly_cheap/standard/peak/solar  — kWh this week per tariff
+#   sensor.hottub_energy_monthly_cheap/standard/peak/solar — kWh this month per tariff
+#   select.hottub_energy_daily/weekly/monthly               — active tariff (switched by automation 6)
 #
-# Sensors produced here:
+# Template sensors (computed from utility meters):
 #   sensor.hot_tub_electricity_rate     — current p/kWh (Cosy tariff)
 #   sensor.hot_tub_today_total_kwh      — today's total kWh usage
 #   sensor.hot_tub_today_cost           — today's cost in pence
@@ -22,15 +24,47 @@
 # Temperature comes directly from the ESPHome wall unit (not defined here):
 #   sensor.hottub_temperature_temperature
 #
-# Cost tracking:
-#   The dashboard's JavaScript replays HA sensor history each time it
-#   loads, assigns each kWh to cheap/standard/peak/solar based on what
-#   hour it was consumed, and writes the totals back to the
-#   hottub_*_kwh input_numbers (defined in hottub_helpers.yaml).
-#   The cost sensors below then multiply those kWh figures by the
-#   configurable rates. This approach survives HA restarts and handles
-#   the month-boundary reset correctly.
+# Cost tracking (new approach — server-side, always correct):
+#   The tariff switcher automation (hottub_tariff_switcher) sets the active
+#   tariff on the utility meters at every Cosy boundary and whenever solar
+#   crosses the 2 kW threshold. The meters accumulate kWh under the correct
+#   tariff continuously in HA, independent of the dashboard being open.
+#   Template sensors multiply those kWh by the configurable rates.
 # ============================================================
+
+# ── UTILITY METERS ─────────────────────────────────────────────────────────────
+# Three meters (daily / weekly / monthly), each with four tariff slots.
+# The active tariff is switched by automation hottub_tariff_switcher.
+# Solar takes priority: when binary_sensor.hot_tub_solar_sufficient is ON,
+# the tariff is set to "solar" regardless of the time window.
+utility_meter:
+
+  hottub_energy_daily:
+    source: sensor.appliance_hottub_energy
+    cycle: daily
+    tariffs:
+      - cheap
+      - standard
+      - peak
+      - solar
+
+  hottub_energy_weekly:
+    source: sensor.appliance_hottub_energy
+    cycle: weekly
+    tariffs:
+      - cheap
+      - standard
+      - peak
+      - solar
+
+  hottub_energy_monthly:
+    source: sensor.appliance_hottub_energy
+    cycle: monthly
+    tariffs:
+      - cheap
+      - standard
+      - peak
+      - solar
 
 template:
   - sensor:
@@ -76,36 +110,32 @@ template:
 
       # ── TODAY TOTAL kWh ────────────────────────────────────
       # Total energy consumed today (all tariff bands combined).
-      # Used by the 23:55 "daily store" automation so the 8AM
-      # notification can report yesterday's figures after the
-      # tariff-split kWh buckets have been cleared by a new day.
-      # Sums the four tariff buckets written by the dashboard.
+      # Sums the four utility meter tariff slots for today.
       - name: "Hot Tub Today Total kWh"
         unique_id: hot_tub_today_total_kwh
         unit_of_measurement: "kWh"
         icon: mdi:lightning-bolt
         state: >
-          {% set c    = states('input_number.hottub_today_cheap_kwh')    | float(0) %}
-          {% set s    = states('input_number.hottub_today_standard_kwh') | float(0) %}
-          {% set p    = states('input_number.hottub_today_peak_kwh')     | float(0) %}
-          {% set solar = states('input_number.hottub_today_solar_kwh')  | float(0) %}
+          {% set c     = states('sensor.hottub_energy_daily_cheap')    | float(0) %}
+          {% set s     = states('sensor.hottub_energy_daily_standard') | float(0) %}
+          {% set p     = states('sensor.hottub_energy_daily_peak')     | float(0) %}
+          {% set solar = states('sensor.hottub_energy_daily_solar')    | float(0) %}
           {{ (c + s + p + solar) | round(3) }}
 
       # ── COST SENSORS ───────────────────────────────────────
-      # Multiply the kWh buckets (written by the dashboard) by
-      # the configurable tariff rates to produce a cost in pence.
-      # Divide by 100 in the UI to display as pounds.
+      # Multiply utility meter kWh by the configurable tariff rates.
+      # Solar kWh has zero grid cost. Divide by 100 in the UI for pounds.
       - name: "Hot Tub Today Cost"
         unique_id: hot_tub_today_cost
         unit_of_measurement: "p"
         icon: mdi:currency-gbp
         state: >
-          {% set c = states('input_number.hottub_today_cheap_kwh')    | float(0) %}
-          {% set s = states('input_number.hottub_today_standard_kwh') | float(0) %}
-          {% set p = states('input_number.hottub_today_peak_kwh')     | float(0) %}
-          {% set c_rate = states('input_number.hottub_rate_cheap')    | float(12) %}
-          {% set s_rate = states('input_number.hottub_rate_standard') | float(24) %}
-          {% set p_rate = states('input_number.hottub_rate_peak')     | float(38) %}
+          {% set c      = states('sensor.hottub_energy_daily_cheap')    | float(0) %}
+          {% set s      = states('sensor.hottub_energy_daily_standard') | float(0) %}
+          {% set p      = states('sensor.hottub_energy_daily_peak')     | float(0) %}
+          {% set c_rate = states('input_number.hottub_rate_cheap')      | float(12) %}
+          {% set s_rate = states('input_number.hottub_rate_standard')   | float(24) %}
+          {% set p_rate = states('input_number.hottub_rate_peak')       | float(38) %}
           {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
 
       - name: "Hot Tub Week Cost"
@@ -113,12 +143,12 @@ template:
         unit_of_measurement: "p"
         icon: mdi:currency-gbp
         state: >
-          {% set c = states('input_number.hottub_week_cheap_kwh')    | float(0) %}
-          {% set s = states('input_number.hottub_week_standard_kwh') | float(0) %}
-          {% set p = states('input_number.hottub_week_peak_kwh')     | float(0) %}
-          {% set c_rate = states('input_number.hottub_rate_cheap')    | float(12) %}
-          {% set s_rate = states('input_number.hottub_rate_standard') | float(24) %}
-          {% set p_rate = states('input_number.hottub_rate_peak')     | float(38) %}
+          {% set c      = states('sensor.hottub_energy_weekly_cheap')    | float(0) %}
+          {% set s      = states('sensor.hottub_energy_weekly_standard') | float(0) %}
+          {% set p      = states('sensor.hottub_energy_weekly_peak')     | float(0) %}
+          {% set c_rate = states('input_number.hottub_rate_cheap')       | float(12) %}
+          {% set s_rate = states('input_number.hottub_rate_standard')    | float(24) %}
+          {% set p_rate = states('input_number.hottub_rate_peak')        | float(38) %}
           {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
 
       - name: "Hot Tub Month Cost"
@@ -126,12 +156,12 @@ template:
         unit_of_measurement: "p"
         icon: mdi:currency-gbp
         state: >
-          {% set c = states('input_number.hottub_month_cheap_kwh')    | float(0) %}
-          {% set s = states('input_number.hottub_month_standard_kwh') | float(0) %}
-          {% set p = states('input_number.hottub_month_peak_kwh')     | float(0) %}
-          {% set c_rate = states('input_number.hottub_rate_cheap')    | float(12) %}
-          {% set s_rate = states('input_number.hottub_rate_standard') | float(24) %}
-          {% set p_rate = states('input_number.hottub_rate_peak')     | float(38) %}
+          {% set c      = states('sensor.hottub_energy_monthly_cheap')    | float(0) %}
+          {% set s      = states('sensor.hottub_energy_monthly_standard') | float(0) %}
+          {% set p      = states('sensor.hottub_energy_monthly_peak')     | float(0) %}
+          {% set c_rate = states('input_number.hottub_rate_cheap')        | float(12) %}
+          {% set s_rate = states('input_number.hottub_rate_standard')     | float(24) %}
+          {% set p_rate = states('input_number.hottub_rate_peak')         | float(38) %}
           {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
 
 
