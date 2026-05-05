@@ -1,0 +1,9 @@
+# ============================================================
+# configuration.yaml — Packages Block
+# Add this to your existing configuration.yaml to load the
+# hot tub package files automatically.
+# ============================================================
+
+homeassistant:
+  packages:
+    hottub: !include_dir_named packages/hottub

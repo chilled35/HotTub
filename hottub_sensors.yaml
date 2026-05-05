@@ -1,0 +1,139 @@
+# ============================================================
+# Hot Tub Control — Template Sensors & Binary Sensors
+# File: packages/hottub/hottub_sensors.yaml
+#
+# Entities produced:
+#   sensor.hot_tub_electricity_rate     — current p/kWh (Cosy tariff)
+#   sensor.hot_tub_today_cost           — today's cost in pence
+#   sensor.hot_tub_week_cost            — this week's cost in pence
+#   sensor.hot_tub_month_cost           — this month's cost in pence
+#   binary_sensor.hot_tub_cheap_rate_active
+#   binary_sensor.hot_tub_peak_block_active
+#   binary_sensor.hot_tub_solar_sufficient
+#   binary_sensor.hot_tub_voltage_alert
+#
+# Temperature is provided directly by ESPHome:
+#   sensor.hottub_temperature_temperature
+#
+# Energy/cost tracking uses the dashboard's WebSocket history
+# calculator (calculateCosts in dashboard.html) which queries
+# sensor.appliance_hottub_energy directly from the HA recorder
+# and writes results to the hottub_*_kwh input_numbers.
+# This approach supports rolling 31-day history and accurate
+# tariff splits without dependency on HA uptime.
+# ============================================================
+
+template:
+  - sensor:
+
+      # ── ELECTRICITY RATE ───────────────────────────────────
+      # Returns the current Octopus Cosy rate based on time of day.
+      # Cheap: 04:00-07:00 / 13:00-16:00 / 22:00-00:00
+      # Peak:  16:00-19:00
+      # Standard: all other times
+      - name: "Hot Tub Electricity Rate"
+        unique_id: hot_tub_electricity_rate
+        unit_of_measurement: "p/kWh"
+        icon: mdi:cash
+        state: >
+          {% set h = now().hour %}
+          {% if (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}
+            {{ states('input_number.hottub_rate_cheap') | float(12) }}
+          {% elif h >= 16 and h < 19 %}
+            {{ states('input_number.hottub_rate_peak') | float(38) }}
+          {% else %}
+            {{ states('input_number.hottub_rate_standard') | float(24) }}
+          {% endif %}
+        attributes:
+          tariff: >
+            {% set h = now().hour %}
+            {% if (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}cheap
+            {% elif h >= 16 and h < 19 %}peak
+            {% else %}standard{% endif %}
+
+      # ── COST SENSORS ───────────────────────────────────────
+      # Computed from the tariff-split kWh input_numbers which
+      # are populated by the dashboard's history calculator.
+      - name: "Hot Tub Today Cost"
+        unique_id: hot_tub_today_cost
+        unit_of_measurement: "p"
+        icon: mdi:currency-gbp
+        state: >
+          {% set c = states('input_number.hottub_today_cheap_kwh')    | float(0) %}
+          {% set s = states('input_number.hottub_today_standard_kwh') | float(0) %}
+          {% set p = states('input_number.hottub_today_peak_kwh')     | float(0) %}
+          {% set c_rate = states('input_number.hottub_rate_cheap')    | float(12) %}
+          {% set s_rate = states('input_number.hottub_rate_standard') | float(24) %}
+          {% set p_rate = states('input_number.hottub_rate_peak')     | float(38) %}
+          {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
+
+      - name: "Hot Tub Week Cost"
+        unique_id: hot_tub_week_cost
+        unit_of_measurement: "p"
+        icon: mdi:currency-gbp
+        state: >
+          {% set c = states('input_number.hottub_week_cheap_kwh')    | float(0) %}
+          {% set s = states('input_number.hottub_week_standard_kwh') | float(0) %}
+          {% set p = states('input_number.hottub_week_peak_kwh')     | float(0) %}
+          {% set c_rate = states('input_number.hottub_rate_cheap')    | float(12) %}
+          {% set s_rate = states('input_number.hottub_rate_standard') | float(24) %}
+          {% set p_rate = states('input_number.hottub_rate_peak')     | float(38) %}
+          {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
+
+      - name: "Hot Tub Month Cost"
+        unique_id: hot_tub_month_cost
+        unit_of_measurement: "p"
+        icon: mdi:currency-gbp
+        state: >
+          {% set c = states('input_number.hottub_month_cheap_kwh')    | float(0) %}
+          {% set s = states('input_number.hottub_month_standard_kwh') | float(0) %}
+          {% set p = states('input_number.hottub_month_peak_kwh')     | float(0) %}
+          {% set c_rate = states('input_number.hottub_rate_cheap')    | float(12) %}
+          {% set s_rate = states('input_number.hottub_rate_standard') | float(24) %}
+          {% set p_rate = states('input_number.hottub_rate_peak')     | float(38) %}
+          {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
+
+
+  - binary_sensor:
+
+      # ── CHEAP RATE ACTIVE ──────────────────────────────────
+      - name: "Hot Tub Cheap Rate Active"
+        unique_id: hot_tub_cheap_rate_active
+        device_class: power
+        icon: mdi:cash-check
+        state: >
+          {% set h = now().hour %}
+          {{ (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 }}
+
+      # ── PEAK BLOCK ACTIVE ──────────────────────────────────
+      - name: "Hot Tub Peak Block Active"
+        unique_id: hot_tub_peak_block_active
+        device_class: safety
+        icon: mdi:block-helper
+        state: >
+          {% set h = now().hour %}
+          {{ h >= 16 and h < 19 }}
+
+      # ── SOLAR SUFFICIENT ───────────────────────────────────
+      # True when solar production meets or exceeds the threshold.
+      # sensor.power_meter reports in kW; threshold is in W.
+      - name: "Hot Tub Solar Sufficient"
+        unique_id: hot_tub_solar_sufficient
+        device_class: power
+        icon: mdi:solar-power
+        state: >
+          {% set solar_w   = states('sensor.power_meter') | float(0) * 1000 %}
+          {% set threshold = states('input_number.hottub_solar_threshold') | float(2000) %}
+          {{ solar_w >= threshold }}
+
+      # ── VOLTAGE ALERT ──────────────────────────────────────
+      # Fires if the Zigbee plug reports voltage outside 210-250V.
+      - name: "Hot Tub Voltage Alert"
+        unique_id: hot_tub_voltage_alert
+        device_class: problem
+        icon: mdi:lightning-bolt-circle
+        state: >
+          {% set v = states('sensor.appliance_hottub_voltage') | float(0) %}
+          {{ v > 0 and (v < 210 or v > 250) }}
+        attributes:
+          voltage: "{{ states('sensor.appliance_hottub_voltage') | float(0) }} V"

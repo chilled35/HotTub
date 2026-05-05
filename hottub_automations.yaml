@@ -1,0 +1,557 @@
+# ============================================================
+# Hot Tub Control — Core Automations
+# File: /config/packages/hottub/hottub_automations.yaml
+#
+# Automation index:
+#   1.  hottub_cheap_rate_on          Powers on at start of each cheap window
+#   2.  hottub_cheap_rate_off         Powers off at end of each cheap window
+#   3.  hottub_peak_block_on          Force off at 16:00 peak start
+#   4.  hottub_override_start         Starts timer when override boolean ON
+#   5.  hottub_override_expired       Auto-cancels override when timer expires
+#   6.  hottub_tariff_switcher        Switches utility meter tariff at boundaries
+#   7.  hottub_smart_controller       Priority cascade — main control logic
+#   8.  hottub_store_daily_totals     Snapshots usage at 23:55 for notifications
+#   9.  hottub_esphome_override_on    Bridge: D1 Mini touch → HA override ON
+#   10. hottub_esphome_override_off   Bridge: D1 Mini touch cancel → HA override OFF
+#
+# MASTER GATE: input_boolean.hottub_schedule_enabled
+#   All automations that power the tub ON check this first.
+#   Turn it OFF when the tub is empty or being serviced.
+#   Override (automations 4, 9, 10) is intentionally EXEMPT.
+#
+# OVERRIDE FLOW (D1 Mini touch sensor):
+#   Touch tap on D1 Mini
+#     → switch.hottub_temperature_manual_override (ESPHome)
+#       → hottub_esphome_override_on (bridge)
+#         → input_boolean.hottub_in_use_override
+#           → hottub_override_start
+#             → switch.appliance_hottub ON + timer starts
+#   Timer expires / 4th tap cancels on D1 Mini
+#     → switch.hottub_temperature_manual_override OFF
+#       → hottub_esphome_override_off (bridge)
+#         → input_boolean.hottub_in_use_override OFF
+#           → switch.appliance_hottub OFF (if not in cheap window)
+# ============================================================
+
+automation:
+
+  # ══════════════════════════════════════════════════════════
+  # 1. CHEAP RATE — POWER ON
+  # Fires at the start of each Octopus Cosy cheap window.
+  # Cosy windows: 04:00–07:00 / 13:00–16:00 / 22:00–00:00
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_cheap_rate_on
+    alias: "Hot Tub — Cheap Rate: Power On"
+    description: >
+      Powers tub on at the start of each Cosy cheap window,
+      provided schedule is enabled and tub is not already running.
+
+    trigger:
+      - platform: time
+        at: "04:00:00"
+      - platform: time
+        at: "13:00:00"
+      - platform: time
+        at: "22:00:00"
+
+    condition:
+      - condition: state
+        entity_id: input_boolean.hottub_schedule_enabled
+        state: "on"
+      - condition: state
+        entity_id: switch.appliance_hottub
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.hottub_in_use_override
+        state: "off"
+
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Cheap Rate"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: "Cheap rate window started. Tub powered on."
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 2. CHEAP RATE — POWER OFF
+  # Fires at the end of each Cosy cheap window.
+  # Only powers off if tub is in Cheap Rate mode.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_cheap_rate_off
+    alias: "Hot Tub — Cheap Rate: Power Off"
+    description: >
+      Powers tub off at the end of each Cosy cheap window,
+      but only if the tub is in Cheap Rate mode.
+
+    trigger:
+      - platform: time
+        at: "07:00:00"
+      - platform: time
+        at: "16:00:00"
+      - platform: time
+        at: "00:00:00"
+
+    condition:
+      - condition: state
+        entity_id: input_select.hottub_control_mode
+        state: "Cheap Rate"
+      - condition: state
+        entity_id: switch.appliance_hottub
+        state: "on"
+
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Off"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: "Cheap rate window ended. Tub powered off."
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 3. PEAK BLOCK — FORCE OFF
+  # Cosy peak 16:00–19:00 carries a penalty rate (~38p/kWh).
+  # Force the tub off at 16:00 regardless of mode, UNLESS
+  # override is active (that is a deliberate user decision).
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_peak_block_on
+    alias: "Hot Tub — Peak Block: Force Off at 16:00"
+    description: >
+      Forces tub off at start of Cosy peak period (16:00–19:00).
+      Override is exempt — that is a conscious user choice.
+
+    trigger:
+      - platform: time
+        at: "16:00:00"
+
+    condition:
+      - condition: state
+        entity_id: switch.appliance_hottub
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.hottub_in_use_override
+        state: "off"
+
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Peak Block"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: "Peak rate period started (16:00). Tub forced off."
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 4. OVERRIDE — START TIMER
+  # When override boolean is activated, turn the tub on
+  # immediately and start the auto-cancel timer.
+  # Schedule gate does NOT apply — override is always deliberate.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_override_start
+    alias: "Hot Tub — Override: Start"
+    description: >
+      When override is turned on: power the tub on, set mode,
+      start the auto-cancel timer.
+
+    trigger:
+      - platform: state
+        entity_id: input_boolean.hottub_in_use_override
+        to: "on"
+
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Override"
+
+      - service: timer.start
+        target:
+          entity_id: timer.hottub_override_timer
+        data:
+          duration:
+            hours: "{{ states('input_number.hottub_override_duration') | int(3) }}"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: >
+            Override activated. Tub on for
+            {{ states('input_number.hottub_override_duration') }} hours.
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 5. OVERRIDE — TIMER EXPIRED (AUTO-CANCEL)
+  # When the override timer fires, cancel the override and
+  # power off the tub. Sends iOS push notification.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_override_expired
+    alias: "Hot Tub — Override: Auto-Cancel on Timer Expiry"
+    description: >
+      Automatically cancels the override and powers the tub off
+      when the countdown timer finishes.
+
+    trigger:
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.hottub_override_timer
+
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.hottub_in_use_override
+
+      - service: switch.turn_off
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Off"
+
+      # ⚠️ Update notify service name to match your iOS device
+      - service: notify.mobile_app_iphone
+        data:
+          title: "🛁 Hot Tub Override Ended"
+          message: >
+            Override finished after
+            {{ states('input_number.hottub_override_duration') | float | round(1) }}h.
+            Returning to smart control.
+          data:
+            push:
+              sound: default
+            url: /local/hottub/dashboard.html
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: "Override timer expired. Tub powered off automatically."
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 6. TARIFF SWITCHER
+  # Switches utility meter active tariff at each Cosy boundary.
+  # Also runs on HA startup so costs track correctly after restart.
+  #
+  # Cosy schedule:
+  #   00:00 → standard
+  #   04:00 → cheap
+  #   07:00 → standard
+  #   13:00 → cheap
+  #   16:00 → peak
+  #   19:00 → standard
+  #   22:00 → cheap
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_tariff_switcher
+    alias: "Hot Tub — Tariff Switcher"
+    description: >
+      Switches utility meter tariff at each Cosy period boundary
+      and on HA startup so costs are always tracked at the correct rate.
+    mode: single
+
+    trigger:
+      - platform: time
+        at: "00:00:00"
+        id: "standard"
+      - platform: time
+        at: "04:00:00"
+        id: "cheap"
+      - platform: time
+        at: "07:00:00"
+        id: "standard"
+      - platform: time
+        at: "13:00:00"
+        id: "cheap"
+      - platform: time
+        at: "16:00:00"
+        id: "peak"
+      - platform: time
+        at: "19:00:00"
+        id: "standard"
+      - platform: time
+        at: "22:00:00"
+        id: "cheap"
+      - platform: homeassistant
+        event: start
+        id: "startup"
+
+    action:
+      - variables:
+          tariff: >
+            {% if trigger.id == 'startup' %}
+              {% set h = now().hour %}
+              {% if h >= 16 and h < 19 %}peak
+              {% elif (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}cheap
+              {% else %}standard{% endif %}
+            {% else %}
+              {{ trigger.id }}
+            {% endif %}
+
+      - service: select.select_option
+        target:
+          entity_id:
+            - select.hottub_energy_daily
+            - select.hottub_energy_weekly
+            - select.hottub_energy_monthly
+        data:
+          option: "{{ tariff }}"
+
+
+  # ══════════════════════════════════════════════════════════
+  # 7. SMART HEATING CONTROLLER (PRIORITY CASCADE)
+  # Runs every 5 min and on key state changes.
+  # Priority order:
+  #   1. Peak Block (16:00–19:00) — force OFF unless override active
+  #   2. Override ON              — force ON
+  #   3. Solar sufficient         — turn ON (free energy)
+  #   4. Cheap rate active        — turn ON (low cost window)
+  #   6. Default                  — turn OFF
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_smart_controller
+    alias: "Hot Tub — Smart Heating Controller"
+    description: >
+      Evaluates conditions every 5 min and on key state changes.
+      Updates switch.appliance_hottub and input_select.hottub_control_mode.
+    mode: single
+    max_exceeded: silent
+
+    trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: state
+        entity_id: input_boolean.hottub_in_use_override
+        not_to:
+          - unavailable
+          - unknown
+      - platform: state
+        entity_id: binary_sensor.hot_tub_cheap_rate_active
+        not_to:
+          - unavailable
+          - unknown
+      - platform: state
+        entity_id: binary_sensor.hot_tub_peak_block_active
+        not_to:
+          - unavailable
+          - unknown
+      - platform: state
+        entity_id: binary_sensor.hot_tub_solar_sufficient
+        not_to:
+          - unavailable
+          - unknown
+
+    condition: []
+
+    action:
+      - variables:
+          override:       "{{ is_state('input_boolean.hottub_in_use_override', 'on') }}"
+          peak_block:     "{{ is_state('binary_sensor.hot_tub_peak_block_active', 'on') }}"
+          cheap_rate:     "{{ is_state('binary_sensor.hot_tub_cheap_rate_active', 'on') }}"
+          solar_ok:       "{{ is_state('binary_sensor.hot_tub_solar_sufficient', 'on') }}"
+          solar_sched:    "{{ is_state('input_boolean.hottub_schedule_solar', 'on') }}"
+          cheap_sched:    "{{ is_state('input_boolean.hottub_schedule_cheap', 'on') }}"
+
+      - choose:
+
+          # ── PRIORITY 1: PEAK BLOCK (override exempt) ───────
+          - conditions:
+              - condition: template
+                value_template: "{{ peak_block and not override }}"
+            sequence:
+              - service: switch.turn_off
+                target:
+                  entity_id: switch.appliance_hottub
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.hottub_control_mode
+                data:
+                  option: "Peak Block"
+
+          # ── PRIORITY 2: OVERRIDE ───────────────────────────
+          - conditions:
+              - condition: template
+                value_template: "{{ override }}"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.appliance_hottub
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.hottub_control_mode
+                data:
+                  option: "Override"
+
+          # ── PRIORITY 3: SOLAR ──────────────────────────────
+          - conditions:
+              - condition: template
+                value_template: "{{ solar_ok and solar_sched and not peak_block }}"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.appliance_hottub
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.hottub_control_mode
+                data:
+                  option: "Solar"
+
+          # ── PRIORITY 4: CHEAP RATE ─────────────────────────
+          - conditions:
+              - condition: template
+                value_template: "{{ cheap_rate and cheap_sched and not peak_block }}"
+            sequence:
+              - service: switch.turn_on
+                target:
+                  entity_id: switch.appliance_hottub
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.hottub_control_mode
+                data:
+                  option: "Cheap Rate"
+
+        # ── DEFAULT: OFF ──────────────────────────────────────
+        default:
+          - service: switch.turn_off
+            target:
+              entity_id: switch.appliance_hottub
+          - service: input_select.select_option
+            target:
+              entity_id: input_select.hottub_control_mode
+            data:
+              option: "Off"
+
+
+  # ══════════════════════════════════════════════════════════
+  # 8. STORE DAILY TOTALS (23:55)
+  # Snapshots today's energy and cost into input_number helpers
+  # so the 8AM notification can report yesterday's figures
+  # after the utility meters reset at midnight.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_store_daily_totals
+    alias: "Hot Tub — Store Daily Totals (23:55)"
+    description: "Captures daily kWh and cost before midnight reset."
+
+    trigger:
+      - platform: time
+        at: "23:55:00"
+
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.hottub_yesterday_energy
+        data:
+          value: "{{ states('sensor.hot_tub_today_total_kwh') | float(0) | round(3) }}"
+
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.hottub_yesterday_cost
+        data:
+          value: "{{ states('sensor.hot_tub_today_cost') | float(0) | round(1) }}"
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 9. ESPHOME BRIDGE — OVERRIDE ON
+  # Watches binary_sensor.hottub_temperature_override_active
+  # which is a template sensor on the D1 Mini whose lambda
+  # returns true when override_seconds > 0.
+  # State changes are what the ESPHome native API pushes
+  # reliably — far more dependable than service calls.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_esphome_override_on
+    alias: "Hot Tub — ESPHome Bridge: Override On"
+    description: >
+      When the D1 Mini override sensor goes ON (touch tap),
+      turn on the tub immediately and set the override boolean.
+
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.hottub_temperature_override_active
+        to: "on"
+        not_from:
+          - unavailable
+          - unknown
+
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.appliance_hottub
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.hottub_in_use_override
+
+    mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 10. ESPHOME BRIDGE — OVERRIDE OFF
+  # When the D1 Mini countdown expires or 4th tap cancels,
+  # the sensor goes OFF. Clear the override boolean and let
+  # the smart controller decide whether to keep the tub on.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_esphome_override_off
+    alias: "Hot Tub — ESPHome Bridge: Override Off"
+    description: >
+      When the D1 Mini override sensor goes OFF,
+      clear the override boolean. Smart controller re-evaluates
+      immediately and turns tub off if outside cheap/solar window.
+
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.hottub_temperature_override_active
+        to: "off"
+        not_from:
+          - unavailable
+          - unknown
+
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.hottub_in_use_override
+
+    mode: single

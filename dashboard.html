@@ -1,0 +1,1903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hot Tub Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* ── RESET & BASE ─────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:          #080b0d;
+    --surface:     #0f1317;
+    --surface-2:   #161b20;
+    --border:      #242b33;
+    --border-hi:   #38434f;
+    --text:        #e8f0fa;
+    --text-dim:    #7d8fa3;
+    --text-muted:  #404e5c;
+
+    --solar:       #2eec5a;
+    --cheap:       #4db8ff;
+    --override:    #f0a83a;
+    --peak:        #ff5f57;
+    --off:         #7d8fa3;
+    --at-temp:     #b47eff;
+
+    --gauge-track: #1a2028;
+    --gauge-cold:  #4db8ff;
+    --gauge-warm:  #f0a83a;
+    --gauge-hot:   #2eec5a;
+    --gauge-over:  #ff5f57;
+
+    --font-mono:   'DM Mono', monospace;
+    --font-display:'Syne', sans-serif;
+
+    --radius:      6px;
+    --radius-lg:   12px;
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 15px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+
+  /* ── SCHEDULE BANNER ─────────────────────────────────── */
+  .schedule-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    border: 1px solid;
+    transition: all 0.3s;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.03em;
+  }
+  .schedule-banner.active {
+    background: color-mix(in srgb, var(--solar) 12%, transparent);
+    border-color: var(--solar);
+    color: var(--solar);
+  }
+  .schedule-banner.inactive {
+    background: color-mix(in srgb, var(--peak) 12%, transparent);
+    border-color: var(--peak);
+    color: var(--peak);
+  }
+  .schedule-banner-left { display: flex; align-items: center; gap: 10px; }
+  .schedule-banner-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .schedule-banner.active .schedule-banner-dot {
+    box-shadow: 0 0 8px currentColor;
+    animation: pulse 2s infinite;
+  }
+
+  /* ── SCHEDULE TOGGLE (bottom) ────────────────────────── */
+  .schedule-toggle-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .schedule-toggle-label {
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+  .schedule-toggle-label strong {
+    display: block;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--text);
+    margin-bottom: 2px;
+  }
+  .toggle-btn {
+    flex-shrink: 0;
+    padding: 11px 22px;
+    border-radius: var(--radius);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-dim);
+    transition: all 0.2s;
+  }
+  .toggle-btn.enabled {
+    background: color-mix(in srgb, var(--solar) 15%, transparent);
+    border-color: var(--solar);
+    color: var(--solar);
+  }
+  .toggle-btn.disabled {
+    background: color-mix(in srgb, var(--peak) 15%, transparent);
+    border-color: var(--peak);
+    color: var(--peak);
+  }
+
+  /* ── SETUP SCREEN ─────────────────────────────────── */
+  #setup-screen {
+    position: fixed; inset: 0; z-index: 100;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #setup-screen.hidden { display: none; }
+  .setup-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 40px;
+    width: 100%; max-width: 420px;
+  }
+  .setup-card h1 {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 22px;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .setup-card p {
+    color: var(--text-dim);
+    margin-bottom: 28px;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .setup-card a { color: var(--cheap); }
+  .field-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .setup-input {
+    width: 100%;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 10px 12px;
+    outline: none;
+    transition: border-color 0.15s;
+    margin-bottom: 16px;
+  }
+  .setup-input:focus { border-color: var(--cheap); }
+  .setup-btn {
+    width: 100%;
+    background: var(--cheap);
+    color: var(--bg);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.04em;
+    padding: 12px;
+    border: none;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .setup-btn:hover { opacity: 0.85; }
+  #setup-error {
+    color: var(--peak);
+    font-size: 12px;
+    margin-top: 10px;
+    display: none;
+  }
+
+  /* ── MAIN LAYOUT ──────────────────────────────────── */
+  #app { display: none; }
+  #app.ready { display: block; }
+
+  .page {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+  }
+
+  /* ── HEADER ───────────────────────────────────────── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .header-icon {
+    width: 36px; height: 36px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .header-title {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .header-sub {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+  .conn-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .conn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: background 0.3s;
+  }
+  .conn-dot.connected { background: var(--solar); box-shadow: 0 0 6px var(--solar); }
+  .conn-dot.connecting { background: var(--cheap); animation: pulse 1.2s infinite; }
+  .conn-dot.error { background: var(--peak); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* ── GRID ─────────────────────────────────────────── */
+  .grid-top {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .grid-bottom {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  @media (max-width: 600px) {
+    .grid-top { grid-template-columns: 1fr; }
+    .grid-bottom { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ── CARD ─────────────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-hi), transparent);
+  }
+  .card-label {
+    font-size: 12px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 14px;
+    font-weight: 500;
+  }
+  .card-full { grid-column: 1 / -1; }
+
+  /* ── TEMPERATURE CARD ─────────────────────────────── */
+  .temp-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .gauge-wrap {
+    flex-shrink: 0;
+    width: 120px;
+    height: 120px;
+  }
+  .gauge-wrap svg {
+    width: 120px;
+    height: 120px;
+    overflow: visible;
+  }
+
+  .temp-display {
+    flex: 1;
+    min-width: 0;
+  }
+  .temp-value {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 52px;
+    line-height: 1;
+    letter-spacing: -0.04em;
+    transition: color 0.5s;
+    white-space: nowrap;
+  }
+  .temp-unit {
+    font-size: 22px;
+    color: var(--text-dim);
+    vertical-align: top;
+    margin-top: 6px;
+    display: inline-block;
+  }
+  .temp-target {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin-top: 6px;
+  }
+  .temp-source {
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+
+  /* ── MODE CARD ────────────────────────────────────── */
+  .mode-card { display: flex; flex-direction: column; }
+
+  .mode-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 17px;
+    letter-spacing: 0.02em;
+    margin-bottom: 16px;
+    transition: all 0.3s;
+    border: 1px solid currentColor;
+    width: fit-content;
+  }
+  .mode-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+
+  .mode-badge.Solar       { color: var(--solar);    background: color-mix(in srgb, var(--solar) 18%, transparent); }
+  .mode-badge.Cheap-Rate  { color: var(--cheap);    background: color-mix(in srgb, var(--cheap) 18%, transparent); }
+  .mode-badge.Override    { color: var(--override); background: color-mix(in srgb, var(--override) 18%, transparent); }
+  .mode-badge.Peak-Block  { color: var(--peak);     background: color-mix(in srgb, var(--peak) 18%, transparent); }
+  .mode-badge.At-Temperature { color: var(--at-temp); background: color-mix(in srgb, var(--at-temp) 18%, transparent); }
+  .mode-badge.Standard-Rate { color: var(--override); background: color-mix(in srgb, var(--override) 18%, transparent); }
+  .mode-badge.Off         { color: var(--off);      background: color-mix(in srgb, var(--off) 12%, transparent); }
+
+  .mode-desc {
+    font-size: 14px;
+    color: var(--text-dim);
+    line-height: 1.6;
+    margin-bottom: 20px;
+    flex: 1;
+  }
+
+  /* ── OVERRIDE BUTTON ──────────────────────────────── */
+  .override-row {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .override-btn {
+    flex: 1;
+    padding: 11px 16px;
+    border-radius: var(--radius);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-dim);
+    transition: all 0.2s;
+  }
+  .override-btn:hover { border-color: var(--override); color: var(--override); }
+  .override-btn.active {
+    background: color-mix(in srgb, var(--override) 15%, transparent);
+    border-color: var(--override);
+    color: var(--override);
+  }
+  .override-timer {
+    font-size: 14px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .override-timer.running { color: var(--override); }
+
+  /* ── STAT ROWS ────────────────────────────────────── */
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { font-size: 13px; color: var(--text-dim); }
+  .stat-value {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 16px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-value.solar  { color: var(--solar); }
+  .stat-value.cheap  { color: var(--cheap); }
+  .stat-value.peak   { color: var(--peak); }
+  .stat-value.dim    { color: var(--text-dim); }
+
+  /* ── ENERGY CARD ──────────────────────────────────── */
+  .tab-row {
+    display: flex; gap: 4px;
+    margin-bottom: 16px;
+  }
+  .tab {
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 13px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    transition: all 0.15s;
+  }
+  .tab.active {
+    background: var(--surface-2);
+    border-color: var(--border-hi);
+    color: var(--text);
+  }
+  .cost-big {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 40px;
+    letter-spacing: -0.04em;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .cost-sub {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+  .energy-bar-wrap {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px;
+  }
+  .energy-bar-label { font-size: 13px; color: var(--text-dim); width: 64px; flex-shrink: 0; }
+  .energy-bar-track {
+    flex: 1; height: 5px;
+    background: var(--surface-2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .energy-bar-fill {
+    height: 100%; border-radius: 3px;
+    background: var(--cheap);
+    transition: width 0.8s ease;
+  }
+  .energy-bar-val { font-size: 13px; color: var(--text-dim); width: 60px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* ── COMPACT CARD (solar + rate) ────────────────────────── */
+  .compact-value {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 26px;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin-bottom: 4px;
+    white-space: nowrap;
+  }
+  .compact-value.solar { color: var(--solar); }
+  .compact-sub {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 2px;
+    line-height: 1.4;
+  }
+  .compact-threshold {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 0;
+  }
+
+  /* ── COSY WINDOW CHIPS ───────────────────────────────── */
+  .window-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .chip-badge {
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .badge-cheap { background: color-mix(in srgb, var(--cheap) 20%, transparent); color: var(--cheap); }
+  .badge-peak  { background: color-mix(in srgb, var(--peak)  20%, transparent); color: var(--peak); }
+
+  /* ── SETTINGS CARD ────────────────────────────────── */
+  .settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 500px) { .settings-grid { grid-template-columns: 1fr; } }
+
+  .setting-group { display: flex; flex-direction: column; gap: 8px; }
+  .setting-label { font-size: 13px; color: var(--text-dim); letter-spacing: 0.05em; text-transform: uppercase; }
+  .setting-display {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 20px;
+    color: var(--text);
+  }
+  .setting-range {
+    width: 100%;
+    accent-color: var(--cheap);
+    cursor: pointer;
+  }
+  .setting-range-row {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .setting-range-val {
+    font-size: 15px; color: var(--text);
+    min-width: 60px; text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── PUMP STATUS STRIP ────────────────────────────── */
+  .pump-strip {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 18px;
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .pump-indicator {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    background: var(--off);
+    transition: all 0.3s;
+    flex-shrink: 0;
+  }
+  .pump-indicator.on { background: var(--solar); box-shadow: 0 0 10px var(--solar); }
+  .pump-label { font-size: 14px; color: var(--text-dim); flex: 1; }
+  .pump-power { font-family: var(--font-display); font-weight: 700; font-size: 17px; color: var(--text); }
+
+  /* ── FOOTER ───────────────────────────────────────── */
+  .status-bar {
+    margin-top: 20px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    gap: 16px;
+  }
+  .status-bar-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .wifi-bars {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 12px;
+  }
+  .wifi-bars span {
+    display: block;
+    width: 3px;
+    background: currentColor;
+    border-radius: 1px;
+    opacity: 0.3;
+  }
+  .wifi-bars span.lit { opacity: 1; }
+  .wifi-bars span:nth-child(1) { height: 3px; }
+  .wifi-bars span:nth-child(2) { height: 6px; }
+  .wifi-bars span:nth-child(3) { height: 9px; }
+  .wifi-bars span:nth-child(4) { height: 12px; }
+  .footer {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .footer a {
+    color: var(--text-muted);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .footer a:hover { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<!-- ── SETUP SCREEN ─────────────────────────────────── -->
+<div id="setup-screen">
+  <div class="setup-card">
+    <h1>🛁 Hot Tub Control</h1>
+    <p>
+      Enter your Home Assistant URL and a
+      <a href="/profile" target="_blank">long-lived access token</a>
+      to connect. These are saved locally in your browser.
+    </p>
+    <label class="field-label" for="ha-url">Home Assistant URL</label>
+    <input class="setup-input" id="ha-url" type="text"
+           placeholder="http://homeassistant.local:8123"
+           value="">
+    <label class="field-label" for="ha-token">Long-Lived Access Token</label>
+    <input class="setup-input" id="ha-token" type="password"
+           placeholder="Your token from Profile → Security">
+    <button class="setup-btn" onclick="saveSetup()">Connect</button>
+    <div id="setup-error"></div>
+  </div>
+</div>
+
+<!-- ── MAIN APP ──────────────────────────────────────── -->
+<div id="app">
+  <div class="page">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <div class="header-icon">🛁</div>
+        <div>
+          <div class="header-title">Hot Tub Control</div>
+          <div class="header-sub" id="last-updated">Connecting…</div>
+        </div>
+      </div>
+      <div class="conn-badge">
+        <div class="conn-dot connecting" id="conn-dot"></div>
+        <span id="conn-label">Connecting</span>
+      </div>
+    </div>
+
+
+    <!-- Schedule Status Banner -->
+    <div class="schedule-banner inactive" id="schedule-banner">
+      <div class="schedule-banner-left">
+        <div class="schedule-banner-dot"></div>
+        <span id="schedule-banner-text">Schedule — Loading…</span>
+      </div>
+      <span id="schedule-banner-mode" style="font-size:12px; opacity:0.8"></span>
+    </div>
+
+    <!-- Pump Status Strip -->
+    <div class="pump-strip">
+      <div class="pump-indicator" id="pump-indicator"></div>
+      <div class="pump-label">Pump — <span id="pump-state-text">Unknown</span></div>
+      <div class="pump-power" id="pump-power">—</div>
+      <div class="pump-voltage" id="pump-voltage" style="font-size:13px; color: var(--text-dim); margin-left:8px; font-family: var(--font-mono);">— V</div>
+    </div>
+
+    <!-- Top Grid: Temperature + Mode -->
+    <div class="grid-top">
+
+      <!-- Temperature Card -->
+      <div class="card temp-card">
+        <div class="gauge-wrap">
+          <svg viewBox="0 0 120 120" id="gauge-svg">
+            <path id="gauge-track" d="" fill="none" stroke-width="8" stroke-linecap="round"/>
+            <path id="gauge-fill"  d="" fill="none" stroke-width="8" stroke-linecap="round"/>
+            <circle id="gauge-target-dot" cx="0" cy="0" r="5" fill="none" stroke-width="2"/>
+            <text x="4"   y="116" font-size="8" fill="#3d4550" font-family="DM Mono,monospace">20°</text>
+            <text x="88"  y="116" font-size="8" fill="#3d4550" font-family="DM Mono,monospace">42°</text>
+          </svg>
+        </div>
+        <div class="temp-display">
+          <div>
+            <span class="temp-value" id="temp-value">--</span><span class="temp-unit">°C</span>
+          </div>
+          <div class="temp-target">Target: <span id="target-value">38</span>°C</div>
+          <div class="temp-source" id="temp-source">—</div>
+        </div>
+      </div>
+
+      <!-- Mode + Override Card -->
+      <div class="card mode-card">
+        <div class="card-label">Control Mode</div>
+        <div class="mode-badge Off" id="mode-badge">
+          <div class="mode-dot"></div>
+          <span id="mode-text">Off</span>
+        </div>
+        <div class="mode-desc" id="mode-desc">Loading…</div>
+        <div class="override-timer" id="override-timer" style="margin-top:8px;"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Grid: Solar + Rate/Windows merged -->
+    <div class="grid-bottom">
+
+      <!-- Solar Card — compact big-number layout -->
+      <div class="card">
+        <div class="card-label">Solar</div>
+        <div class="compact-value solar" id="solar-power">— W</div>
+        <div class="compact-sub" id="solar-status">—</div>
+        <div class="compact-threshold">Threshold: <span id="solar-threshold">2000 W</span></div>
+      </div>
+
+      <!-- Electricity + Cosy Windows (merged) -->
+      <div class="card">
+        <div class="card-label">Cosy Tariff</div>
+        <div class="compact-value" id="rate-value">—</div>
+        <div class="compact-sub" id="rate-next">—</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:10px;">
+          <div class="window-chip">04–07 <span class="chip-badge badge-cheap">Cheap</span></div>
+          <div class="window-chip">13–16 <span class="chip-badge badge-cheap">Cheap</span></div>
+          <div class="window-chip">16–19 <span class="chip-badge badge-peak">Peak ⛔</span></div>
+          <div class="window-chip">22–00 <span class="chip-badge badge-cheap">Cheap</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Energy & Cost Card -->
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-label">Energy & Cost</div>
+      <div class="tab-row">
+        <button class="tab active" onclick="setTab('daily',this)">Today</button>
+        <button class="tab" onclick="setTab('weekly',this)">This Week</button>
+        <button class="tab" onclick="setTab('monthly',this)">This Month</button>
+      </div>
+      <div id="energy-panel">
+        <div class="cost-big" id="cost-display">£-.--</div>
+        <div class="cost-sub" id="cost-sub">-- kWh consumed</div>
+        <div class="energy-bar-wrap">
+          <div class="energy-bar-label">Energy</div>
+          <div class="energy-bar-track"><div class="energy-bar-fill" id="energy-bar" style="width:0%"></div></div>
+          <div class="energy-bar-val" id="energy-bar-val">— kWh</div>
+        </div>
+        <div class="energy-bar-wrap">
+          <div class="energy-bar-label">Cost</div>
+          <div class="energy-bar-track"><div class="energy-bar-fill" id="cost-bar" style="width:0%; background: var(--override)"></div></div>
+          <div class="energy-bar-val" id="cost-bar-val">£—</div>
+        </div>
+        <!-- Per-tariff breakdown -->
+        <div id="tariff-breakdown" style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px; display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; text-align:center;">
+          <div>
+            <div style="font-size:10px; color:var(--cheap); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:4px;">Cheap</div>
+            <div style="font-family:var(--font-display); font-weight:700; font-size:13px; color:var(--text)" id="energy-cheap-val">— kWh</div>
+          </div>
+          <div>
+            <div style="font-size:10px; color:var(--text-dim); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:4px;">Standard</div>
+            <div style="font-family:var(--font-display); font-weight:700; font-size:13px; color:var(--text)" id="energy-std-val">— kWh</div>
+          </div>
+          <div>
+            <div style="font-size:10px; color:var(--peak); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:4px;">Peak</div>
+            <div style="font-family:var(--font-display); font-weight:700; font-size:13px; color:var(--text)" id="energy-peak-val">— kWh</div>
+          </div>
+          <div>
+            <div style="font-size:10px; color:var(--solar); letter-spacing:0.06em; text-transform:uppercase; margin-bottom:4px;">☀️ Free</div>
+            <div style="font-family:var(--font-display); font-weight:700; font-size:13px; color:var(--solar)" id="energy-solar-val">— kWh</div>
+          </div>
+        </div>
+
+        <!-- Daily breakdown — last 7 days -->
+        <div id="daily-breakdown" style="display:none; margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
+          <div style="font-size:10px; color:var(--text-muted); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">Daily breakdown</div>
+          <div id="daily-breakdown-rows"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Card -->
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-label">Settings</div>
+      <div class="settings-grid">
+
+        <div class="setting-group">
+          <div class="setting-label">Solar Threshold</div>
+          <div class="setting-range-row">
+            <input type="range" class="setting-range" id="solar-threshold-slider"
+                   min="500" max="5000" step="100" value="2000"
+                   oninput="updateSliderDisplay('solar-threshold-display', this.value, ' W')"
+                   onchange="setInputNumber('input_number.hottub_solar_threshold', this.value)">
+            <div class="setting-range-val" id="solar-threshold-display">2000 W</div>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-label">Override Duration</div>
+          <div class="setting-range-row">
+            <input type="range" class="setting-range" id="override-dur-slider"
+                   min="0.5" max="8" step="0.5" value="3"
+                   oninput="updateSliderDisplay('override-dur-display', this.value, ' h')"
+                   onchange="setInputNumber('input_number.hottub_override_duration', this.value)">
+            <div class="setting-range-val" id="override-dur-display">3 h</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+
+    <!-- Schedule Toggle (deliberate placement — bottom of page) -->
+    <div class="schedule-toggle-card" style="flex-direction:column; align-items:stretch; gap:14px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div>
+          <div style="font-family:var(--font-display); font-weight:700; font-size:16px; color:var(--text); margin-bottom:2px;">Smart Schedule</div>
+          <div style="font-size:13px; color:var(--text-dim);">Automatic heating control</div>
+        </div>
+        <button class="toggle-btn" id="schedule-toggle-btn" style="flex-shrink:0;" onclick="toggleSchedule()">—</button>
+      </div>
+      <div style="border-top:1px solid var(--border); padding-top:12px; display:flex; flex-direction:column; gap:10px;">
+        <div style="font-size:11px; color:var(--text-muted); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:2px;">Heat when</div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+            <span style="font-size:18px; flex-shrink:0;">☀️</span>
+            <div>
+              <div style="font-size:14px; color:var(--text); font-weight:600;">Solar sufficient</div>
+              <div style="font-size:12px; color:var(--text-muted);">Free energy</div>
+            </div>
+          </div>
+          <button class="toggle-btn" id="schedule-solar-btn" style="flex-shrink:0; min-width:60px;" onclick="toggleBool('hottub_schedule_solar','schedule-solar-btn')">—</button>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+            <span style="font-size:18px; flex-shrink:0;">⚡</span>
+            <div>
+              <div style="font-size:14px; color:var(--text); font-weight:600;">Cheap rate</div>
+              <div style="font-size:12px; color:var(--text-muted);">04–07 · 13–16 · 22–00</div>
+            </div>
+          </div>
+          <button class="toggle-btn" id="schedule-cheap-btn" style="flex-shrink:0; min-width:60px;" onclick="toggleBool('hottub_schedule_cheap','schedule-cheap-btn')">—</button>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+            <span style="font-size:18px; flex-shrink:0;">💛</span>
+            <div>
+              <div style="font-size:14px; color:var(--text); font-weight:600;">Standard rate</div>
+              <div style="font-size:12px; color:var(--text-muted);">24p/kWh · always on</div>
+            </div>
+          </div>
+          <button class="toggle-btn" id="schedule-standard-btn" style="flex-shrink:0; min-width:60px;" onclick="toggleBool('hottub_schedule_standard','schedule-standard-btn')">—</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Override -->
+    <div class="schedule-toggle-card" style="margin-bottom:12px;">
+      <div class="schedule-toggle-label">
+        <strong>Manual Override</strong>
+        Force the pump on regardless of schedule, rate, or time of day. Auto-cancels after <span id="override-dur-label">3h</span>.
+      </div>
+      <div style="display:flex; align-items:center; gap:12px; flex-shrink:0;">
+        <div class="override-timer" id="override-timer-bottom" style="font-size:13px; color:var(--override); font-variant-numeric:tabular-nums;"></div>
+        <button class="toggle-btn" id="override-btn" onclick="toggleOverride()">Override: Off</button>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div class="status-bar-item">
+        <div class="wifi-bars" id="wifi-bars">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <span id="wifi-signal-text">ESP: —</span>
+      </div>
+      <div class="status-bar-item" id="esp-ip-status">
+        IP: —
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span>Hot Tub Control v1.0 · Octopus Cosy</span>
+      <a onclick="clearSetup()">⚙ Reconnect</a>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIGURATION
+// Loaded from localStorage (set via the setup screen).
+// ============================================================
+let HA_URL   = localStorage.getItem('ha_url')   || '';
+let HA_TOKEN = localStorage.getItem('ha_token') || '';
+
+// ── ENTITY IDS ────────────────────────────────────────────
+const E = {
+  temp:             'sensor.hottub_temperature_temperature',
+  tempReal:         'sensor.hottub_temperature_temperature',
+  targetTemp:       'input_number.hottub_target_temp',
+  mode:             'input_select.hottub_control_mode',
+  schedule:         'automation.hot_tub_smart_heating_controller',
+  override:         'input_boolean.hottub_in_use_override',
+  scheduleSolar:    'input_boolean.hottub_schedule_solar',
+  scheduleCheap:    'input_boolean.hottub_schedule_cheap',
+  scheduleStandard: 'input_boolean.hottub_schedule_standard',
+  overrideDur:      'input_number.hottub_override_duration',
+  overrideTimer:    'timer.hottub_override_timer',
+  pump:             'switch.appliance_hottub',
+  power:            'sensor.appliance_hottub_power',
+  voltage:          'sensor.appliance_hottub_voltage',
+  voltageAlert:     'binary_sensor.hot_tub_voltage_alert',
+  solar:            'sensor.power_meter',
+  solarThreshold:   'input_number.hottub_solar_threshold',
+  rate:             'sensor.hot_tub_electricity_rate',
+  // Raw energy source + snapshots for total kWh
+  energyRaw:          'sensor.appliance_hottub_energy',
+  snapMidnight:       'input_number.hottub_kwh_snap_midnight',
+  snapWeek:           'input_number.hottub_kwh_snap_week',
+  snapMonth:          'input_number.hottub_kwh_snap_month',
+  // Per-tariff kWh from recorder (updated every 30 min)
+  energyDailyCheap:   'input_number.hottub_today_cheap_kwh',
+  energyDailyStd:     'input_number.hottub_today_standard_kwh',
+  energyDailyPeak:    'input_number.hottub_today_peak_kwh',
+  energyDailySolar:   'input_number.hottub_today_solar_kwh',
+  energyWeeklyCheap:  'input_number.hottub_week_cheap_kwh',
+  energyWeeklyStd:    'input_number.hottub_week_standard_kwh',
+  energyWeeklyPeak:   'input_number.hottub_week_peak_kwh',
+  energyWeeklySolar:  'input_number.hottub_week_solar_kwh',
+  energyMonthlyCheap: 'input_number.hottub_month_cheap_kwh',
+  energyMonthlyStd:   'input_number.hottub_month_standard_kwh',
+  energyMonthlyPeak:  'input_number.hottub_month_peak_kwh',
+  energyMonthlySolar: 'input_number.hottub_month_solar_kwh',
+  // Cost sensors
+  costDaily:          'sensor.hot_tub_today_cost',
+  costWeekly:         'sensor.hot_tub_week_cost',
+  costMonthly:        'sensor.hot_tub_month_cost',
+  // ESP device status
+  wifiSignal:         'sensor.hottub_temperature_wifi_signal',
+};
+
+// ── STATE ─────────────────────────────────────────────────
+let ws = null;
+let msgId = 1;
+let callbacks = {};
+let states = {};
+let activeTab = 'daily';
+let reconnectTimer = null;
+let timerInterval = null;
+
+// Energy bar reference values (kWh / £ per period for scaling)
+const BAR_MAX = { daily: [10, 3], weekly: [70, 20], monthly: [300, 90] };
+
+// ── MODE DESCRIPTIONS ─────────────────────────────────────
+const MODE_DESC = {
+  'Solar':           '☀️ Solar production is above threshold. Heating with free energy.',
+  'Cheap Rate':      '⚡ Cheap rate window active (Cosy). Heating at low cost.',
+  'Standard Rate':   '💛 Standard rate heating enabled. Grid power at standard tariff.',
+  'Override':        '🔴 Manual override active. Heating regardless of rate or time.',
+  'Peak Block':      '⛔ Peak rate period (16:00–19:00). Pump blocked to save money.',
+  'At Temperature':  '✅ Target temperature reached. Pump off — maintaining heat.',
+  'Off':             '💤 No heating conditions met. Pump off.',
+};
+
+// ── SETUP ─────────────────────────────────────────────────
+function saveSetup() {
+  const url   = document.getElementById('ha-url').value.trim().replace(/\/$/, '');
+  const token = document.getElementById('ha-token').value.trim();
+  const err   = document.getElementById('setup-error');
+
+  if (!url || !token) {
+    err.style.display = 'block';
+    err.textContent = 'Please enter both URL and token.';
+    return;
+  }
+  localStorage.setItem('ha_url', url);
+  localStorage.setItem('ha_token', token);
+  HA_URL = url; HA_TOKEN = token;
+  err.style.display = 'none';
+  document.getElementById('setup-screen').classList.add('hidden');
+  document.getElementById('app').classList.add('ready');
+  connect();
+}
+
+function clearSetup() {
+  localStorage.removeItem('ha_url');
+  localStorage.removeItem('ha_token');
+  location.reload();
+}
+
+// ── WEBSOCKET ─────────────────────────────────────────────
+function connect() {
+  setConnStatus('connecting', 'Connecting');
+  const wsUrl = HA_URL.replace('https://', 'wss://').replace('http://', 'ws://') + '/api/websocket';
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen    = () => {};
+  ws.onclose   = () => {
+    setConnStatus('error', 'Disconnected');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 5000);
+  };
+  ws.onerror   = () => setConnStatus('error', 'Error');
+  ws.onmessage = (e) => handleMsg(JSON.parse(e.data));
+}
+
+function send(msg, cb) {
+  const id = msgId++;
+  msg.id = id;
+  if (cb) callbacks[id] = cb;
+  ws.send(JSON.stringify(msg));
+}
+
+function handleMsg(msg) {
+  switch (msg.type) {
+    case 'auth_required':
+      ws.send(JSON.stringify({ type: 'auth', access_token: HA_TOKEN }));
+      break;
+
+    case 'auth_ok':
+      setConnStatus('connected', 'Live');
+      // Clear cache and reload all states fresh on every connect
+      states = {};
+      send({ type: 'get_states' }, (r) => {
+        r.result.forEach(s => { states[s.entity_id] = s; });
+        renderAll();
+        startCostCalculation();
+      });
+      // Subscribe to changes
+      send({ type: 'subscribe_events', event_type: 'state_changed' });
+      break;
+
+    case 'auth_invalid':
+      setConnStatus('error', 'Auth failed');
+      showSetupError('Invalid token. Please reconnect.');
+      break;
+
+    case 'result':
+      if (callbacks[msg.id]) { callbacks[msg.id](msg); delete callbacks[msg.id]; }
+      break;
+
+    case 'event':
+      if (msg.event?.event_type === 'state_changed') {
+        const { entity_id, new_state } = msg.event.data;
+        states[entity_id] = new_state;
+        renderEntity(entity_id);
+        updateLastUpdated();
+      }
+      break;
+  }
+}
+
+function getState(id)     { return states[id]?.state ?? 'unavailable'; }
+function getAttr(id, a)   { return states[id]?.attributes?.[a]; }
+function getFloat(id, fb) { return parseFloat(getState(id)) || (fb ?? 0); }
+
+// ── RENDER ALL ────────────────────────────────────────────
+function renderAll() {
+  renderTemperature();
+  renderMode();
+  renderPump();
+  renderSolar();
+  renderRate();
+  renderEnergy();
+  renderSchedule();
+  renderScheduleBools();
+  renderOverrideTimer();
+  renderSettings();
+  updateLastUpdated();
+}
+
+function renderEntity(id) {
+  const tempIds = [E.temp, E.targetTemp, 'sensor.hottub_temperature_temperature'];
+  if (tempIds.includes(id)) renderTemperature();
+
+  if (id === E.mode) renderMode();
+  if (id === E.pump || id === E.power || id === E.voltage || id === E.voltageAlert) renderPump();
+  if (id === E.solar || id === E.solarThreshold) renderSolar();
+  if (id === E.rate) renderRate();
+
+  const energyIds = [
+    E.energyRaw, E.snapMidnight, E.snapWeek, E.snapMonth,
+    E.energyDailyCheap, E.energyDailyStd, E.energyDailyPeak,
+    E.energyWeeklyCheap, E.energyWeeklyStd, E.energyWeeklyPeak,
+    E.energyMonthlyCheap, E.energyMonthlyStd, E.energyMonthlyPeak,
+    E.costDaily, E.costWeekly, E.costMonthly
+  ];
+  if (energyIds.includes(id)) renderEnergy();
+
+  if (id === E.wifiSignal) renderWifi();
+  if (id === E.schedule) renderSchedule();
+  if ([E.scheduleSolar, E.scheduleCheap, E.scheduleStandard].includes(id)) renderScheduleBools();
+  if (id === E.override || id === E.overrideTimer) {
+    renderMode(); renderOverrideTimer();
+  }
+
+  if ([E.solarThreshold, E.overrideDur].includes(id)) {
+    renderSettings();
+  }
+}
+
+// ── SCHEDULE ──────────────────────────────────────────────
+function renderSchedule() {
+  const schedState = getState(E.schedule);
+  const mode       = getState(E.mode);
+  const banner     = document.getElementById('schedule-banner');
+  const text       = document.getElementById('schedule-banner-text');
+  const modeEl     = document.getElementById('schedule-banner-mode');
+  const btn        = document.getElementById('schedule-toggle-btn');
+
+  if (!banner || !btn) return;
+
+  // Package automations report 'unavailable' even when running.
+  // Only 'off' means the schedule is actually disabled.
+  const active = schedState !== 'off';
+  if (active) {
+    banner.className   = 'schedule-banner active';
+    text.textContent   = 'Schedule — Active';
+    btn.textContent    = 'Disable Schedule';
+    btn.className      = 'toggle-btn enabled';
+  } else {
+    banner.className   = 'schedule-banner inactive';
+    text.textContent   = 'Schedule — Disabled';
+    btn.textContent    = 'Enable Schedule';
+    btn.className      = 'toggle-btn disabled';
+  }
+  modeEl.textContent = (mode && mode !== 'Off') ? mode : '';
+}
+
+function toggleBool(entityId, btnId) {
+  const isOn = getState('input_boolean.' + entityId.replace('input_boolean.','')) === 'on'
+            || getState('input_boolean.' + entityId) === 'on';
+  const id = entityId.startsWith('input_boolean.') ? entityId : 'input_boolean.' + entityId;
+  const on = getState(id) === 'on';
+  send({
+    type: 'call_service',
+    domain: 'input_boolean',
+    service: on ? 'turn_off' : 'turn_on',
+    target: { entity_id: id }
+  });
+}
+
+function renderScheduleBools() {
+  const map = [
+    [E.scheduleSolar,    'schedule-solar-btn'],
+    [E.scheduleCheap,    'schedule-cheap-btn'],
+    [E.scheduleStandard, 'schedule-standard-btn'],
+  ];
+  for (const [entity, btnId] of map) {
+    const btn = document.getElementById(btnId);
+    if (!btn) continue;
+    const on = getState(entity) === 'on';
+    btn.textContent = on ? 'On' : 'Off';
+    btn.className   = 'toggle-btn ' + (on ? 'enabled' : 'disabled');
+  }
+}
+
+function toggleSchedule() {
+  const isOff = getState(E.schedule) === 'off';
+  send({
+    type: 'call_service',
+    domain: 'automation',
+    service: isOff ? 'turn_on' : 'turn_off',
+    target: { entity_id: E.schedule }
+  });
+}
+
+// ── TEMPERATURE ───────────────────────────────────────────
+function renderTemperature() {
+  const temp   = getFloat(E.temp, null);
+  const target = getFloat(E.targetTemp, 38);
+  const src    = getAttr(E.temp, 'source') || '—';
+
+  const tempEl = document.getElementById('temp-value');
+  const isValid = temp !== 0 && !isNaN(temp);
+
+  tempEl.textContent = isValid ? temp.toFixed(1) : '--';
+  document.getElementById('target-value').textContent = target.toFixed(1);
+  const realState = getState('sensor.hottub_temperature_temperature');
+  const srcLabel = (realState !== 'unavailable' && realState !== 'unknown' && realState !== null)
+    ? '🌡️ DS18B20' : '✏️ Placeholder';
+  document.getElementById('temp-source').textContent = srcLabel;
+
+  // Colour coding
+  const clr = isValid
+    ? (temp >= target    ? 'var(--at-temp)'
+     : temp >= target-3  ? 'var(--override)'
+     : temp >= target-10 ? 'var(--cheap)'
+     : 'var(--gauge-cold)')
+    : 'var(--text-dim)';
+  tempEl.style.color = clr;
+
+  // SVG Gauge
+  drawGauge(isValid ? temp : null, target);
+}
+
+function drawGauge(temp, target) {
+  const cx = 60, cy = 70, r = 52;
+  const startAngle = 195, endAngle = 345;
+  const minTemp = 20, maxTemp = 42;
+
+  function polarToXY(angleDeg, radius) {
+    const a = (angleDeg - 90) * Math.PI / 180;
+    return { x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) };
+  }
+
+  function tempToAngle(t) {
+    const pct = Math.min(1, Math.max(0, (t - minTemp) / (maxTemp - minTemp)));
+    return startAngle + pct * (endAngle - startAngle);
+  }
+
+  function arcPath(from, to, rad) {
+    const s = polarToXY(from, rad);
+    const e = polarToXY(to, rad);
+    const large = (to - from) > 180 ? 1 : 0;
+    return `M ${s.x} ${s.y} A ${rad} ${rad} 0 ${large} 1 ${e.x} ${e.y}`;
+  }
+
+  const track = document.getElementById('gauge-track');
+  const fill  = document.getElementById('gauge-fill');
+  const dot   = document.getElementById('gauge-target-dot');
+
+  track.setAttribute('d', arcPath(startAngle, endAngle, r));
+  track.setAttribute('stroke', 'var(--gauge-track)');
+
+  if (temp !== null) {
+    const fillAngle = Math.min(tempToAngle(temp), endAngle);
+    fill.setAttribute('d', arcPath(startAngle, fillAngle, r));
+    const clr = temp >= target    ? 'var(--at-temp)'
+               : temp >= target - 3 ? 'var(--override)'
+               : 'var(--cheap)';
+    fill.setAttribute('stroke', clr);
+  } else {
+    fill.setAttribute('d', '');
+  }
+
+  const ta = tempToAngle(target);
+  const tp = polarToXY(ta, r);
+  dot.setAttribute('cx', tp.x.toFixed(1));
+  dot.setAttribute('cy', tp.y.toFixed(1));
+  dot.setAttribute('stroke', 'var(--at-temp)');
+}
+
+// ── MODE ──────────────────────────────────────────────────
+
+// ── WIFI SIGNAL STATUS BAR ────────────────────────────────────────────────────
+function renderWifi() {
+  const dbm = getFloat(E.wifiSignal, null);
+  const barsEl = document.getElementById('wifi-bars');
+  const textEl = document.getElementById('wifi-signal-text');
+  if (!barsEl || !textEl) return;
+
+  if (dbm === null) {
+    textEl.textContent = 'ESP: offline';
+    return;
+  }
+
+  // dBm → bar count: > -55 = 4, > -67 = 3, > -78 = 2, > -89 = 1
+  let bars = 1;
+  if (dbm > -55) bars = 4;
+  else if (dbm > -67) bars = 3;
+  else if (dbm > -78) bars = 2;
+
+  // Colour: 4=green, 3=green, 2=amber, 1=red
+  const colour = bars >= 3 ? 'var(--solar)' : bars === 2 ? 'var(--at-temp)' : 'var(--peak)';
+  barsEl.style.color = colour;
+
+  const spans = barsEl.querySelectorAll('span');
+  spans.forEach((s, i) => s.classList.toggle('lit', i < bars));
+
+  textEl.textContent = `ESP: ${dbm.toFixed(0)} dBm`;
+}
+
+function renderMode() {
+  const mode = getState(E.mode);
+  const badge = document.getElementById('mode-badge');
+  document.getElementById('mode-text').textContent = mode;
+  badge.className = 'mode-badge ' + mode.replace(' ', '-').replace(' ', '-');
+  document.getElementById('mode-desc').textContent = MODE_DESC[mode] || '';
+}
+
+// ── PUMP ──────────────────────────────────────────────────
+function renderPump() {
+  const isOn    = getState(E.pump) === 'on';
+  const pwr     = getFloat(E.power, 0);
+  const voltage = getFloat(E.voltage, 0);
+  const vAlert  = getState(E.voltageAlert) === 'on';
+
+  document.getElementById('pump-indicator').className = 'pump-indicator' + (isOn ? ' on' : '');
+  document.getElementById('pump-state-text').textContent = isOn ? 'Running' : 'Off';
+  document.getElementById('pump-power').textContent = isOn ? pwr.toFixed(0) + ' W' : '—';
+
+  const vEl = document.getElementById('pump-voltage');
+  if (voltage > 0) {
+    vEl.textContent = voltage.toFixed(0) + ' V';
+    vEl.style.color = vAlert ? 'var(--peak)' : 'var(--text-muted)';
+    vEl.title = vAlert ? '⚠️ Voltage outside normal range (210–250V)' : 'Mains voltage';
+  } else {
+    vEl.textContent = '— V';
+  }
+}
+
+// ── SOLAR ─────────────────────────────────────────────────
+function renderSolar() {
+  // sensor.power_meter reports in kW — convert to W for display and comparison
+  const solarKw = getFloat(E.solar, 0);
+  const solar   = solarKw * 1000;
+  const thresh  = getFloat(E.solarThreshold, 2000);
+  const pct     = Math.min(100, (solar / thresh) * 100).toFixed(0);
+  const ok      = solar >= thresh;
+
+  const pwrEl = document.getElementById('solar-power');
+  pwrEl.textContent = solar.toFixed(0) + ' W';
+  pwrEl.style.color = ok ? 'var(--solar)' : 'var(--text-dim)';
+
+  document.getElementById('solar-threshold').textContent = thresh.toFixed(0) + ' W';
+  const statusEl = document.getElementById('solar-status');
+  statusEl.textContent = ok ? '✅ Sufficient' : pct + '% of threshold';
+  statusEl.style.color = ok ? 'var(--solar)' : 'var(--text-dim)';
+}
+
+// ── RATE ──────────────────────────────────────────────────
+function renderRate() {
+  const rate   = getFloat(E.rate, 0);
+  const period = getAttr(E.rate, 'period') || 'standard';
+  const next   = getAttr(E.rate, 'next_change') || '—';
+
+  const clrMap = { cheap: 'var(--cheap)', peak: 'var(--peak)', standard: 'var(--override)' };
+  const clr = clrMap[period] || 'var(--text)';
+
+  const rateEl = document.getElementById('rate-value');
+  rateEl.textContent = rate.toFixed(1) + 'p/kWh';
+  rateEl.style.color = clr;
+
+  const nextEl = document.getElementById('rate-next');
+  nextEl.textContent = next;
+  nextEl.style.color = period === 'peak' ? 'var(--peak)' : 'var(--text-muted)';
+}
+
+// ── ENERGY ────────────────────────────────────────────────
+function renderEnergy() {
+  const t   = activeTab;
+  const T   = t.charAt(0).toUpperCase() + t.slice(1);
+  const raw = getFloat(E.energyRaw, 0);
+
+  const snap    = getFloat(E['snap' + T === 'snapDaily' ? 'snapMidnight' : 'snap' + T], 0);
+  const snapMap = { daily: E.snapMidnight, weekly: E.snapWeek, monthly: E.snapMonth };
+  const totalKwh = Math.max(raw - getFloat(snapMap[t], 0), 0);
+
+  const cheapKwh  = getFloat(E['energy' + T + 'Cheap'],  0);
+  const stdKwh    = getFloat(E['energy' + T + 'Std'],    0);
+  const peakKwh   = getFloat(E['energy' + T + 'Peak'],   0);
+  const solarKwh  = getFloat(E['energy' + T + 'Solar'],  0);
+  const costP     = getFloat(E['cost'   + T],             0);
+  const costGBP  = (costP / 100).toFixed(2);
+
+  document.getElementById('cost-display').textContent = '£' + costGBP;
+  document.getElementById('cost-sub').textContent     = totalKwh.toFixed(2) + ' kWh consumed';
+
+  const [maxE, maxC] = BAR_MAX[t];
+  document.getElementById('energy-bar').style.width = Math.min(100, (totalKwh / maxE) * 100).toFixed(1) + '%';
+  document.getElementById('cost-bar').style.width   = Math.min(100, ((costP / 100) / maxC) * 100).toFixed(1) + '%';
+  document.getElementById('energy-bar-val').textContent = totalKwh.toFixed(2) + ' kWh';
+  document.getElementById('cost-bar-val').textContent   = '£' + costGBP;
+
+  document.getElementById('energy-cheap-val').textContent = cheapKwh.toFixed(3) + ' kWh';
+  document.getElementById('energy-std-val').textContent   = stdKwh.toFixed(3)   + ' kWh';
+  document.getElementById('energy-peak-val').textContent  = peakKwh.toFixed(3)  + ' kWh';
+  document.getElementById('energy-solar-val').textContent = solarKwh.toFixed(3) + ' kWh';
+}
+
+function setTab(tab, btn) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderEnergy();
+  const wrapper = document.getElementById('daily-breakdown');
+  if (wrapper) wrapper.style.display = 'none';
+  if ((tab === 'weekly' || tab === 'monthly') && monthlyTimeline && monthlyFirst) {
+    renderDailyBreakdown();
+  }
+}
+
+// ── OVERRIDE TIMER ─────────────────────────────────────────
+function renderOverrideTimer() {
+  const isOn      = getState(E.override) === 'on';
+  const finishesAt = getAttr(E.overrideTimer, 'finishes_at');
+  const btn        = document.getElementById('override-btn');
+  const timerEl    = document.getElementById('override-timer-bottom');
+  const dur        = getFloat(E.overrideDur, 3);
+
+  btn.textContent = isOn ? 'Override: On' : 'Override: Off';
+  btn.className   = 'toggle-btn' + (isOn ? ' enabled' : '');
+
+  const durLabel = document.getElementById('override-dur-label');
+  if (durLabel) durLabel.textContent = dur + 'h';
+
+  clearInterval(timerInterval);
+
+  if (isOn && finishesAt) {
+    timerInterval = setInterval(() => {
+      const rem = Math.max(0, new Date(finishesAt) - Date.now());
+      const h = Math.floor(rem / 3600000);
+      const m = Math.floor((rem % 3600000) / 60000);
+      const s = Math.floor((rem % 60000) / 1000);
+      timerEl.textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      if (rem === 0) clearInterval(timerInterval);
+    }, 1000);
+  } else {
+    if (timerEl) timerEl.textContent = '';
+  }
+}
+
+function toggleOverride() {
+  const isOn = getState(E.override) === 'on';
+  const svc  = isOn ? 'turn_off' : 'turn_on';
+  send({ type: 'call_service', domain: 'input_boolean', service: svc,
+         service_data: { entity_id: E.override } });
+}
+
+// ── SETTINGS ──────────────────────────────────────────────
+function renderSettings() {
+  syncSlider('solar-threshold-slider',  'solar-threshold-display', E.solarThreshold,  ' W');
+  syncSlider('override-dur-slider',     'override-dur-display',    E.overrideDur,     ' h');
+}
+
+function syncSlider(sliderId, displayId, entityId, unit) {
+  const val = getFloat(entityId, null);
+  if (val === null) return;
+  document.getElementById(sliderId).value = val;
+  document.getElementById(displayId).textContent = val + unit;
+}
+
+function updateSliderDisplay(displayId, value, unit) {
+  document.getElementById(displayId).textContent = value + unit;
+}
+
+function setInputNumber(entityId, value) {
+  send({ type: 'call_service', domain: 'input_number', service: 'set_value',
+         service_data: { entity_id: entityId, value: parseFloat(value) } });
+}
+
+// ── UI HELPERS ────────────────────────────────────────────
+function setConnStatus(status, label) {
+  const dot = document.getElementById('conn-dot');
+  dot.className = 'conn-dot ' + status;
+  document.getElementById('conn-label').textContent = label;
+}
+
+function updateLastUpdated() {
+  const now = new Date();
+  document.getElementById('last-updated').textContent =
+    'Updated ' + now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function showSetupError(msg) {
+  document.getElementById('setup-screen').classList.remove('hidden');
+  document.getElementById('app').classList.remove('ready');
+  document.getElementById('setup-error').style.display = 'block';
+  document.getElementById('setup-error').textContent = msg;
+}
+
+
+// ── COST CALCULATION FROM HISTORY ─────────────────────────
+// Queries the HA history (states table) directly via WebSocket.
+// Computes tariff split by iterating state changes and assigning
+// each energy delta to cheap / standard / peak based on the
+// local hour the reading was recorded.
+// Results are written to input_numbers for use by cost sensors
+// and the 8AM notification.
+// Runs on connection + every 30 minutes.
+
+let costCalcInterval = null;
+let monthlyTimeline = null;
+let monthlyFirst = null;
+let monthlyEnergySeries = null;
+let weeklyTimeline = null;
+let weeklyMon = null;
+
+function startCostCalculation() {
+  clearInterval(costCalcInterval);
+  calculateCosts();
+  costCalcInterval = setInterval(calculateCosts, 5 * 60 * 1000);
+}
+
+function getMondayMidnight() {
+  const now = new Date();
+  const day = now.getDay();                      // 0=Sun … 6=Sat
+  const daysBack = day === 0 ? 6 : day - 1;     // days to go back to Monday
+  const d = new Date(now);
+  d.setDate(d.getDate() - daysBack);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function tariffForHour(h) {
+  if ((h >= 4 && h <= 6) || (h >= 13 && h <= 15) || h >= 22) return 'cheap';
+  if (h >= 16 && h <= 18) return 'peak';
+  return 'standard';
+}
+
+// ── TIMESTAMP HELPER ─────────────────────────────────────
+function getTs(r) {
+  const raw = r.lc ?? r.lu ?? r.last_changed ?? r.last_updated;
+  if (raw == null) return null;
+  const t = typeof raw === 'number'
+    ? new Date(raw * 1000)
+    : new Date(raw);
+  return isNaN(t.getTime()) ? null : t;
+}
+
+// Returns local midnight as a Date — correctly handles DST/BST so day
+// boundary comparisons against UTC timestamps work in all timezones.
+function localMidnight(d) {
+  const r = new Date(d);
+  r.setHours(0, 0, 0, 0);
+  return r;
+}
+
+// ── PARSE SENSOR HISTORY ──────────────────────────────────
+function parseSeries(hist) {
+  const out = [];
+  for (const r of (hist || [])) {
+    const t = getTs(r); if (!t) continue;
+    const v = parseFloat(r.s); if (isNaN(v)) continue;
+    out.push({ t, v });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+// ── COMPUTE SPLIT ─────────────────────────────────────────
+// Simple carry-forward approach — for each energy delta,
+// use the last known solar and power values at that timestamp.
+function computeSplit(timeline, periodStart) {
+  const b = { cheap: 0, standard: 0, peak: 0, solar: 0 };
+  let prevEnergy = null, prevT = null;
+  const threshold = getFloat(E.solarThreshold, 2000);
+
+  for (const pt of timeline) {
+    if (pt.t <= periodStart) {
+      prevEnergy = pt.energy;
+      prevT      = pt.t;
+      continue;
+    }
+
+    if (prevEnergy !== null && prevT !== null) {
+      const deltaKwh = Math.max(pt.energy - prevEnergy, 0);
+      if (deltaKwh > 0) {
+        const tubW   = pt.tubW   ?? 0;
+        const solarW = pt.solarW ?? 0;
+
+        let solarFrac;
+        if (tubW > 0) {
+          solarFrac = Math.min(solarW / tubW, 1);
+        } else {
+          solarFrac = solarW >= threshold ? 1 : 0;
+        }
+
+        const gridFrac = 1 - solarFrac;
+        b.solar += deltaKwh * solarFrac;
+        if (gridFrac > 0) {
+          b[tariffForHour(pt.t.getHours())] += deltaKwh * gridFrac;
+        }
+      }
+    }
+
+    prevEnergy = pt.energy;
+    prevT      = pt.t;
+  }
+
+  return {
+    cheap:    +b.cheap.toFixed(3),
+    standard: +b.standard.toFixed(3),
+    peak:     +b.peak.toFixed(3),
+    solar:    +b.solar.toFixed(3)
+  };
+}
+
+function calculateCosts() {
+  const now   = new Date();
+  const today = new Date(now); today.setHours(0, 0, 0, 0);
+  const mon   = getMondayMidnight();
+  const first = new Date(now); first.setDate(1); first.setHours(0, 0, 0, 0);
+
+  // Query each period with its own tight window.
+  // solar updates every 10s — querying months of it kills the WebSocket.
+  // Each period gets: energy from 1hr before start (for baseline),
+  // solar+power from period start only (minimise records).
+  // Monthly uses a rolling 31-day window so the daily breakdown always has
+  // enough history regardless of where we are in the calendar month.
+  const rolling31 = new Date(now.getTime() - 31 * 24 * 3_600_000);
+  const periods = [
+    { key: 'daily',   start: today,     energyStart: new Date(today.getTime()    - 3_600_000) },
+    { key: 'weekly',  start: mon,       energyStart: new Date(mon.getTime()      - 3_600_000) },
+    { key: 'monthly', start: rolling31, energyStart: new Date(rolling31.getTime() - 3_600_000) },
+  ];
+
+  let completed = 0;
+  const results = {};
+
+  function onPeriodComplete(key, energy, power, solar) {
+    results[key] = { energy, power, solar };
+    completed++;
+    if (completed === periods.length) finalise();
+  }
+
+  for (const p of periods) {
+    (function(period) {
+      // Monthly only needs energy — solar/power queries for a full month
+      // are too large (200k+ records) and kill the WebSocket.
+      // Daily breakdown uses energy-only boundary differences.
+      const monthlyOnly = period.key === 'monthly';
+      let r = {}, pending = monthlyOnly ? 1 : 3;
+      function got(k, v) { r[k] = v; pending--; if (pending === 0) onPeriodComplete(period.key, r.energy, r.power || [], r.solar || []); }
+
+      send({
+        type: 'history/history_during_period',
+        start_time: period.energyStart.toISOString(),
+        end_time: now.toISOString(),
+        entity_ids: ['sensor.appliance_hottub_energy'],
+        no_attributes: true, minimal_response: true, significant_changes_only: false
+      }, (msg) => got('energy', msg.success && msg.result ? msg.result['sensor.appliance_hottub_energy'] : []));
+
+      if (!monthlyOnly) {
+        send({
+          type: 'history/history_during_period',
+          start_time: period.start.toISOString(),
+          end_time: now.toISOString(),
+          entity_ids: ['sensor.appliance_hottub_power'],
+          no_attributes: true, minimal_response: true, significant_changes_only: false
+        }, (msg) => got('power', msg.success && msg.result ? msg.result['sensor.appliance_hottub_power'] : []));
+
+        send({
+          type: 'history/history_during_period',
+          start_time: period.start.toISOString(),
+          end_time: now.toISOString(),
+          entity_ids: ['sensor.power_meter'],
+          no_attributes: true, minimal_response: true, significant_changes_only: false
+        }, (msg) => got('solar', msg.success && msg.result ? msg.result['sensor.power_meter'] : []));
+      }
+    })(p);
+  }
+
+  function buildPeriodTimeline(energy, power, solar, periodStart) {
+    const energySeries = parseSeries(energy);
+    const powerSeries  = parseSeries(power);
+    const solarSeries  = (solar || [])
+      .map(r => { const t = getTs(r); const v = parseFloat(r.s); return (t && !isNaN(v)) ? { t, v: v * 1000 } : null; })
+      .filter(Boolean)
+      .sort((a, b) => a.t - b.t);
+
+    // Find the last energy reading AT OR BEFORE periodStart to use as baseline.
+    // This ensures the first delta after period start is correctly calculated
+    // even if the tub was off (no readings) just before the period began.
+    let baseline = null;
+    for (const e of energySeries) {
+      if (e.t <= periodStart) baseline = e;
+      else break;
+    }
+
+    let tubW = 0, solarW = 0, pi = 0, si = 0;
+    const timeline = [];
+
+    // Insert baseline point at period start so first delta is correct
+    if (baseline) {
+      timeline.push({ t: periodStart, energy: baseline.v, tubW: 0, solarW: 0 });
+    }
+
+    for (const e of energySeries) {
+      if (e.t <= periodStart) continue; // skip pre-period readings
+      while (pi < powerSeries.length && powerSeries[pi].t  <= e.t) { tubW   = powerSeries[pi].v;  pi++; }
+      while (si < solarSeries.length && solarSeries[si].t  <= e.t) { solarW = solarSeries[si].v; si++; }
+      timeline.push({ t: e.t, energy: e.v, tubW, solarW });
+    }
+    return timeline;
+  }
+
+  function finalise() {
+    const dt = buildPeriodTimeline(results.daily.energy,   results.daily.power,   results.daily.solar,   today);
+    const wt = buildPeriodTimeline(results.weekly.energy,  results.weekly.power,  results.weekly.solar,  mon);
+    const mt = buildPeriodTimeline(results.monthly.energy, results.monthly.power, results.monthly.solar, rolling31);
+
+    // Only compute tariff splits if we have daily data
+    if (dt.length >= 2) {
+      const d = computeSplit(dt, today);
+      const w = computeSplit(wt, mon);
+      const m = computeSplit(mt, first);
+
+      const patch = {
+        'input_number.hottub_today_cheap_kwh':    d.cheap,
+        'input_number.hottub_today_standard_kwh': d.standard,
+        'input_number.hottub_today_peak_kwh':     d.peak,
+        'input_number.hottub_today_solar_kwh':    d.solar,
+        'input_number.hottub_week_cheap_kwh':     w.cheap,
+        'input_number.hottub_week_standard_kwh':  w.standard,
+        'input_number.hottub_week_peak_kwh':      w.peak,
+        'input_number.hottub_week_solar_kwh':     w.solar,
+        'input_number.hottub_month_cheap_kwh':    m.cheap,
+        'input_number.hottub_month_standard_kwh': m.standard,
+        'input_number.hottub_month_peak_kwh':     m.peak,
+        'input_number.hottub_month_solar_kwh':    m.solar,
+      };
+
+      for (const [id, val] of Object.entries(patch)) {
+        if (!states[id]) states[id] = {};
+        states[id].state = val.toString();
+        setInputNumber(id, val);
+      }
+    }
+
+    // Always store monthly data for daily breakdown display
+    monthlyTimeline = mt;
+    monthlyFirst = rolling31;
+    monthlyEnergySeries = parseSeries(results.monthly.energy);
+    weeklyTimeline = wt;
+    weeklyMon = mon;
+    renderEnergy();
+    renderDailyBreakdown();
+  }
+}
+
+// ── DAILY BREAKDOWN ───────────────────────────────────────
+// Computes kWh per day for the last 7 days from the monthly
+// timeline. Shows in reverse order (yesterday first).
+function renderDailyBreakdown() {
+  const container = document.getElementById('daily-breakdown-rows');
+  const wrapper   = document.getElementById('daily-breakdown');
+  if (!container || !wrapper) return;
+  wrapper.style.display = 'block';
+
+  const series = monthlyEnergySeries;
+  if (series && series.length > 0) {
+  }
+  if (!series || series.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No data available yet</div>';
+    return;
+  }
+
+  const now  = new Date();
+  const cheapR = getFloat('input_number.hottub_rate_cheap',    12);
+  const stdR   = getFloat('input_number.hottub_rate_standard', 24);
+  const peakR  = getFloat('input_number.hottub_rate_peak',     38);
+  const blendedRate = (cheapR * 9 + stdR * 15) / 24; // weighted avg Cosy rate
+
+  const dayNames   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  const rows = [];
+  for (let i = 1; i <= 7; i++) {
+    const dayEnd   = localMidnight(now); dayEnd.setDate(dayEnd.getDate() - (i-1));
+    const dayStart = new Date(dayEnd); dayStart.setDate(dayStart.getDate() - 1);
+
+    // Find last energy value at or before dayStart and dayEnd
+    let eStart = null, eEnd = null;
+    for (const pt of series) {
+      if (pt.t <= dayStart) eStart = pt.v;
+      if (pt.t <= dayEnd)   eEnd   = pt.v;
+    }
+
+    const kwh  = (eStart !== null && eEnd !== null) ? Math.max(eEnd - eStart, 0) : 0;
+    const cost = kwh * blendedRate / 100;
+    const label = `${dayNames[dayStart.getDay()]} ${dayStart.getDate()} ${monthNames[dayStart.getMonth()]}`;
+
+    rows.push({ label, kwh: +kwh.toFixed(2), cost: +cost.toFixed(2), hasData: eStart !== null && eEnd !== null, dayStart, dayEnd });
+  }
+
+  container.innerHTML = rows.map(r => {
+    const colour = r.kwh > 0 ? 'var(--text)' : 'var(--text-muted)';
+    let cheapKwh = 0, stdKwh = 0, peakKwh = 0, solarKwh = 0, trueCost = 0;
+
+    // Use weekly timeline (has solar/power) for days in current week,
+    // monthly (energy only) for older days
+    const tl = (weeklyTimeline && weeklyMon && r.dayStart >= weeklyMon)
+               ? weeklyTimeline : monthlyTimeline;
+
+    if (tl && r.kwh > 0) {
+      const split = computeSplitBetween(tl, r.dayStart, r.dayEnd);
+      cheapKwh  = split.cheap;
+      stdKwh    = split.standard;
+      peakKwh   = split.peak;
+      solarKwh  = split.solar;
+      trueCost  = ((cheapKwh * cheapR) + (stdKwh * stdR) + (peakKwh * peakR)) / 100;
+    }
+
+    const costStr = r.kwh > 0 ? '£' + trueCost.toFixed(2) : '—';
+
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:${r.kwh > 0 ? '8' : '0'}px;">
+        <span style="font-size:13px;color:var(--text-dim);">${r.label}</span>
+        <span style="font-size:13px;color:${r.kwh > 0 ? 'var(--override)' : 'var(--text-muted)'};">${costStr}</span>
+      </div>
+      ${r.kwh > 0 ? `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center;">
+        <div>
+          <div style="font-size:10px;color:var(--cheap);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Cheap</div>
+          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${cheapKwh.toFixed(3)} kWh</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text-dim);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Standard</div>
+          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${stdKwh.toFixed(3)} kWh</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--peak);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Peak</div>
+          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${peakKwh.toFixed(3)} kWh</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--solar);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">☀️ Free</div>
+          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--solar);font-variant-numeric:tabular-nums;">${solarKwh.toFixed(3)} kWh</div>
+        </div>
+      </div>` : `<div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text-muted);">0.000 kWh</div>`}
+    </div>`;
+  }).join('');
+}
+
+// computeSplit between two specific timestamps (not just from a periodStart to end)
+function computeSplitBetween(timeline, t1, t2) {
+  const b = { cheap: 0, standard: 0, peak: 0, solar: 0 };
+  const threshold = getFloat(E.solarThreshold, 2000);
+  let prevEnergy = null, prevT = null;
+
+  for (const pt of timeline) {
+    if (pt.t < t1) { prevEnergy = pt.energy; prevT = pt.t; continue; }
+    if (pt.t > t2) break;
+    if (prevEnergy !== null && prevT !== null) {
+      const deltaKwh = Math.max(pt.energy - prevEnergy, 0);
+      if (deltaKwh > 0) {
+        const tubW   = pt.tubW   ?? 0;
+        const solarW = pt.solarW ?? 0;
+        const solarFrac = tubW > 0 ? Math.min(solarW / tubW, 1) : (solarW >= threshold ? 1 : 0);
+        const gridFrac  = 1 - solarFrac;
+        b.solar += deltaKwh * solarFrac;
+        if (gridFrac > 0) b[tariffForHour(pt.t.getHours())] += deltaKwh * gridFrac;
+      }
+    }
+    prevEnergy = pt.energy; prevT = pt.t;
+  }
+  return b;
+}
+
+// ── INIT ──────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  if (HA_URL && HA_TOKEN) {
+    document.getElementById('setup-screen').classList.add('hidden');
+    document.getElementById('app').classList.add('ready');
+    connect();
+  } else {
+    // Pre-fill URL from current origin if accessed via HA
+    const url = document.getElementById('ha-url');
+    if (!url.value) url.value = window.location.origin;
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,291 @@
+# ============================================================
+# Hot Tub Control — Helpers
+# File: packages/hottub/hottub_helpers.yaml
+#
+# All user-configurable values and helper entities live here.
+# Included automatically via configuration.yaml packages block.
+# ============================================================
+
+input_number:
+
+  # ── SOLAR THRESHOLD ────────────────────────────────────────
+  # Minimum solar production (W) required to run the tub for free.
+  # Set to roughly match your tub's running wattage.
+  hottub_solar_threshold:
+    name: "Hot Tub Solar Threshold"
+    min: 500
+    max: 6000
+    step: 100
+    unit_of_measurement: "W"
+    icon: mdi:solar-power
+    initial: 2000
+    mode: slider
+
+  # ── OVERRIDE DURATION ──────────────────────────────────────
+  # How long (hours) a dashboard-triggered override runs before
+  # auto-cancelling. Physical button overrides use their own
+  # 30/60/90 min countdown on the OLED — this is for dashboard only.
+  hottub_override_duration:
+    name: "Hot Tub Override Duration"
+    min: 0.5
+    max: 8
+    step: 0.5
+    unit_of_measurement: "h"
+    icon: mdi:timer-outline
+    initial: 3
+    mode: slider
+
+  # ── OCTOPUS COSY TARIFF RATES ──────────────────────────────
+  # Verify your exact rates on the Octopus dashboard / statement.
+  # Cosy windows: cheap 04-07 / 13-16 / 22-00  peak 16-19
+  hottub_rate_cheap:
+    name: "Tariff — Cheap Rate (p/kWh)"
+    min: 1
+    max: 50
+    step: 0.1
+    unit_of_measurement: "p"
+    icon: mdi:cash-minus
+    initial: 12.0
+    mode: box
+
+  hottub_rate_standard:
+    name: "Tariff — Standard Rate (p/kWh)"
+    min: 1
+    max: 100
+    step: 0.1
+    unit_of_measurement: "p"
+    icon: mdi:cash
+    initial: 24.0
+    mode: box
+
+  hottub_rate_peak:
+    name: "Tariff — Peak Rate (p/kWh)"
+    min: 1
+    max: 100
+    step: 0.1
+    unit_of_measurement: "p"
+    icon: mdi:cash-plus
+    initial: 38.0
+    mode: box
+
+  # ── DAILY STORE ────────────────────────────────────────────
+  # Populated at 23:55 by hottub_automations.yaml for the
+  # 8AM daily push notification (values before meter reset).
+  hottub_yesterday_energy:
+    name: "Hot Tub Yesterday Energy"
+    min: 0
+    max: 200
+    step: 0.001
+    unit_of_measurement: "kWh"
+    icon: mdi:lightning-bolt
+    initial: 0
+    mode: box
+
+  hottub_yesterday_cost:
+    name: "Hot Tub Yesterday Cost"
+    min: 0
+    max: 9999
+    step: 0.1
+    unit_of_measurement: "p"
+    icon: mdi:currency-gbp
+    initial: 0
+    mode: box
+
+  # ── TARIFF kWh BUCKETS ─────────────────────────────────────
+  # Populated every 30 min by the dashboard's cost calculator.
+  # Used for tariff-split display in the Energy section.
+  hottub_today_cheap_kwh:
+    name: "Today Cheap kWh"
+    min: 0
+    max: 200
+    step: 0.001
+    unit_of_measurement: "kWh"
+    icon: mdi:lightning-bolt
+    initial: 0
+    mode: box
+
+  hottub_today_standard_kwh:
+    name: "Today Standard kWh"
+    min: 0
+    max: 200
+    step: 0.001
+    unit_of_measurement: "kWh"
+    icon: mdi:lightning-bolt
+    initial: 0
+    mode: box
+
+  hottub_today_peak_kwh:
+    name: "Today Peak kWh"
+    min: 0
+    max: 200
+    step: 0.001
+    unit_of_measurement: "kWh"
+    icon: mdi:lightning-bolt
+    initial: 0
+    mode: box
+
+  hottub_today_solar_kwh:
+    name: "Today Solar kWh"
+    min: 0
+    max: 200
+    step: 0.001
+    unit_of_measurement: "kWh"
+    icon: mdi:solar-power
+    initial: 0
+    mode: box
+
+  hottub_week_cheap_kwh:
+    name: "Week Cheap kWh"
+    min: 0
+    max: 1000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_week_standard_kwh:
+    name: "Week Standard kWh"
+    min: 0
+    max: 1000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_week_peak_kwh:
+    name: "Week Peak kWh"
+    min: 0
+    max: 1000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_week_solar_kwh:
+    name: "Week Solar kWh"
+    min: 0
+    max: 1000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_month_cheap_kwh:
+    name: "Month Cheap kWh"
+    min: 0
+    max: 5000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_month_standard_kwh:
+    name: "Month Standard kWh"
+    min: 0
+    max: 5000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_month_peak_kwh:
+    name: "Month Peak kWh"
+    min: 0
+    max: 5000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_month_solar_kwh:
+    name: "Month Solar kWh"
+    min: 0
+    max: 5000
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  # ── kWh SNAPSHOTS ─────────────────────────────────────────
+  # Dashboard cost calculator uses these as baselines to compute
+  # today/week/month deltas from the cumulative energy sensor.
+  hottub_kwh_snap_midnight:
+    name: "kWh Snapshot — Midnight"
+    min: 0
+    max: 999999
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_kwh_snap_week:
+    name: "kWh Snapshot — Week Start"
+    min: 0
+    max: 999999
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+  hottub_kwh_snap_month:
+    name: "kWh Snapshot — Month Start"
+    min: 0
+    max: 999999
+    step: 0.001
+    unit_of_measurement: "kWh"
+    initial: 0
+    mode: box
+
+
+input_boolean:
+
+  # ── SCHEDULE TOGGLES ───────────────────────────────────────
+  # Each schedule mode can be independently enabled/disabled
+  # from the dashboard. The smart controller checks these before
+  # activating a heating mode.
+
+  hottub_schedule_solar:
+    name: "Schedule — Solar Heating"
+    icon: mdi:solar-power
+
+  hottub_schedule_cheap:
+    name: "Schedule — Cheap Rate"
+    icon: mdi:cash-minus
+
+  hottub_schedule_standard:
+    name: "Schedule — Standard Rate"
+    icon: mdi:cash
+
+  # ── MANUAL OVERRIDE ────────────────────────────────────────
+  # Fires the tub on immediately regardless of schedule or tariff.
+  # Set by: dashboard toggle OR physical touch sensor on OLED unit.
+  # Auto-cancels via HA timer (dashboard) or OLED countdown (physical).
+  hottub_in_use_override:
+    name: "Hot Tub In Use Override"
+    icon: mdi:hot-tub
+
+
+input_select:
+
+  # Read-only mode indicator — written by automations only.
+  # Reflects the current reason the tub is on/off.
+  hottub_control_mode:
+    name: "Hot Tub Control Mode"
+    options:
+      - "Solar"
+      - "Cheap Rate"
+      - "Override"
+      - "Peak Block"
+      - "Off"
+    initial: "Off"
+    icon: mdi:heat-pump
+
+
+timer:
+
+  # Started when override activates via dashboard.
+  # On expiry: override cancelled, iOS notification sent.
+  hottub_override_timer:
+    name: "Hot Tub Override Timer"
+    icon: mdi:timer
+    restore: true

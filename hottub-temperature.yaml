@@ -1,0 +1,324 @@
+# ============================================================
+# Hot Tub Temperature + OLED + Touch Sensor — ESPHome Config
+# Hardware: Wemos D1 Mini + DS18B20 + SSD1309 2.42" OLED + TTP223 Touch
+#
+# WIRING:
+#   DS18B20:     VCC→3.3V  GND→GND  DATA→D5  (+4.7kΩ pull-up to 3.3V)
+#   SSD1309:     VCC→3.3V  GND→GND  SDA→D2   SCL→D1
+#   Touch (TTP223): VCC→3.3V  GND→GND  SIG→D6
+#
+# GPIO MAP (silkscreen → GPIO):
+#   D1 = GPIO5  (I2C SCL)
+#   D2 = GPIO4  (I2C SDA)
+#   D5 = GPIO14 (DS18B20 data)
+#   D6 = GPIO12 (touch sensor signal)
+#   D7 = GPIO13 (spare)
+#
+# DISPLAY MODES:
+#   STANDBY  — shows current Cosy tariff period + water temp (if cheap window)
+#   OVERRIDE — shows countdown ticking in seconds; tap to extend; 4th tap cancels
+#
+# OVERRIDE LOGIC:
+#   Tap 1: 0  → 30 min (1800s) — activates override, switches to countdown screen
+#   Tap 2: 30 → 60 min (3600s)
+#   Tap 3: 60 → 90 min (5400s) — maximum
+#   Tap 4: CANCEL — resets to 0, reverts to standby
+#   Auto-expires when countdown reaches 0
+#
+# COSY TARIFF WINDOWS (Octopus Cosy):
+#   CHEAP  : 04:00–07:00  |  13:00–16:00  |  22:00–00:00
+#   PEAK   : 16:00–19:00  (tub blocked in HA automation)
+#   STANDARD: all other times
+# ============================================================
+
+esphome:
+  name: hottub-temperature
+  friendly_name: Hottub Temperature
+
+esp8266:
+  board: d1_mini
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: 192.168.0.38
+    gateway: 192.168.0.1
+    subnet: 255.255.0.0
+  ap:
+    ssid: "Hottub Fallback"
+    password: "fallbackpass"
+
+captive_portal:
+logger:
+api:
+ota:
+  platform: esphome
+  password: "e5265aaa098ec02bdeb7155d0a2dc7bc"
+
+# ── Time (from Home Assistant — no internet lookup needed) ───────────────────
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# ── I2C for SSD1309 OLED (D1=SCL, D2=SDA) ────────────────────────────────────
+i2c:
+  sda: GPIO4   # D2
+  scl: GPIO5   # D1
+  scan: true
+  id: bus_a
+  frequency: 400kHz
+
+# ── DS18B20 OneWire on D5 ─────────────────────────────────────────────────────
+one_wire:
+  - platform: gpio
+    pin:
+      number: GPIO14  # D5
+      mode:
+        input: true
+        pullup: true
+
+# ── Globals ───────────────────────────────────────────────────────────────────
+globals:
+  # Remaining override time in seconds (0 = inactive)
+  - id: override_seconds
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # Tap counter (0-3); 4th tap cancels
+  - id: tap_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # Tracks whether override was active last tick — prevents spamming turn_off every second in standby
+  - id: override_was_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+# ── Temperature Sensor ────────────────────────────────────────────────────────
+sensor:
+  - platform: dallas_temp
+    name: "Temperature"
+    id: hottub_temp
+    update_interval: 30s
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    id: wifi_signal_db
+    update_interval: 60s
+
+# ── Touch Sensor on D6 (GPIO12) ───────────────────────────────────────────────
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO12  # D6
+      mode: INPUT
+      inverted: true
+    name: "Touch Sensor"
+    id: touch_button
+    filters:
+      - delayed_on: 20ms
+      - delayed_off: 200ms
+    on_press:
+      then:
+        - lambda: |-
+            const int INCREMENT = 1800;
+            const int MAX_TAPS  = 3;
+            const int MAX_SECS  = INCREMENT * MAX_TAPS;
+
+            bool was_active = (id(override_seconds) > 0);
+
+            if (was_active) {
+              if (id(tap_count) >= MAX_TAPS) {
+                // 4th tap: cancel
+                id(override_seconds) = 0;
+                id(tap_count) = 0;
+              } else {
+                id(override_seconds) += INCREMENT;
+                if (id(override_seconds) > MAX_SECS) id(override_seconds) = MAX_SECS;
+                id(tap_count) += 1;
+              }
+            } else {
+              // First tap — start override
+              id(override_seconds) = INCREMENT;
+              id(tap_count) = 1;
+            }
+
+        # State change of override_active_sensor is picked up by HA automation.
+        # No service calls needed — sensor state is what the native API pushes reliably.
+
+  # ── Override Active — HA watches this sensor state to fire automations ───────
+  # Transitions OFF→ON when first tap sets override_seconds > 0
+  # Transitions ON→OFF when countdown expires or 4th tap cancels
+  - platform: template
+    name: "Override Active"
+    id: override_active_sensor
+    lambda: 'return id(override_seconds) > 0;'
+
+# ── Countdown: decrement every second while active ────────────────────────────
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          bool was_active = id(override_was_active);
+          bool is_active  = (id(override_seconds) > 0);
+
+          if (is_active) {
+            id(override_seconds) -= 1;
+            if (id(override_seconds) == 0) {
+              id(tap_count) = 0;
+            }
+          }
+
+          // Only fire turn_off ONCE — on the tick the countdown transitions active→expired
+          // This prevents spamming HA with turn_off every second while in standby
+          if (was_active && id(override_seconds) == 0) {
+            id(override_was_active) = false;
+          } else if (is_active) {
+            id(override_was_active) = true;
+          }
+
+      # override_active_sensor lambda re-evaluates automatically each second.
+      # HA automation watches its state change — no service call needed here.
+
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+# ConsiderMeVexed by Chequered Ink — not on Google Fonts, must be local.
+# Download from https://www.fontspace.com/considermevexed-font-f19295
+# Place the .ttf file at: /config/esphome/fonts/ConsidermevexedRegular-ExLe.ttf
+# ConsiderMeVexed metric note: rendered pixel height ≈ size/3
+# size 26 → ~9px  (large — temp and countdown)
+# size 20 → ~7px  (medium — headers and tariff labels)
+# size 16 → ~5px  (small — secondary info)
+# size 14 → ~5px  (hint — short strings only, see display lambda)
+font:
+  - file: "fonts/ConsidermevexedRegular-ExLe.ttf"
+    id: font_large     # Countdown digits
+    size: 26
+  - file: "fonts/ConsidermevexedRegular-ExLe.ttf"
+    id: font_temp      # Water temperature — 50% larger than font_large
+    size: 39
+  - file: "fonts/ConsidermevexedRegular-ExLe.ttf"
+    id: font_medium    # Headers (COSY TARIFF, OVERRIDE) and tariff labels
+    size: 20
+  - file: "fonts/ConsidermevexedRegular-ExLe.ttf"
+    id: font_small     # Secondary info (temp in non-cheap, Tub blocked)
+    size: 16
+  - file: "fonts/ConsidermevexedRegular-ExLe.ttf"
+    id: font_hint      # Hint text — KEEP STRINGS SHORT to fit 128px
+    size: 18
+
+# ── SSD1309 Display ───────────────────────────────────────────────────────────
+# Note: SSD1309 uses the SSD1306 driver in ESPHome.
+# If display is blank: try address 0x3D, check i2c scan log.
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    id: oled_display
+    update_interval: 1s    # 1s refresh keeps countdown accurate
+    lambda: |-
+      it.fill(COLOR_OFF);
+
+      // ─────────────────────────────────────────────────────────────
+      // Display layout — 128x64px, ConsiderMeVexed rendered heights:
+      //   font_large  (size 26) ≈ 9px   font_medium (size 20) ≈ 7px
+      //   font_small  (size 16) ≈ 5px   font_hint   (size 14) ≈ 5px
+      //
+      // OVERRIDE layout (3 rows):
+      //   y= 2  "OVERRIDE"          font_medium
+      //   y=20  "MM:SS" countdown   font_large  (tallest element)
+      //   y=54  hint                font_hint
+      //
+      // STANDBY layout (4 rows):
+      //   y= 2  "COSY TARIFF"       font_medium
+      //   y=18  tariff label        font_medium
+      //   y=36  temperature         font_large
+      //   y=54  hint (std only)     font_hint
+      // ─────────────────────────────────────────────────────────────
+
+      // ═══════════════════════════════════════════
+      // OVERRIDE MODE
+      // ═══════════════════════════════════════════
+      if (id(override_seconds) > 0) {
+
+        it.print(64, 2, id(font_medium), TextAlign::TOP_CENTER, "OVERRIDE");
+
+        int total = id(override_seconds);
+        int h   = total / 3600;
+        int m   = (total % 3600) / 60;
+        int sec = total % 60;
+        char buf[12];
+        if (h > 0) {
+          snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, sec);
+        } else {
+          snprintf(buf, sizeof(buf), "%02d:%02d", m, sec);
+        }
+        it.print(64, 20, id(font_large), TextAlign::TOP_CENTER, buf);
+
+        // Short hint strings — must fit 128px at font_hint size 14
+        if (id(tap_count) < 3) {
+          it.print(64, 54, id(font_hint), TextAlign::TOP_CENTER, "tap:+30m");
+        } else {
+          it.print(64, 54, id(font_hint), TextAlign::TOP_CENTER, "tap:cancel");
+        }
+
+      // ═══════════════════════════════════════════
+      // STANDBY MODE
+      // ═══════════════════════════════════════════
+      } else {
+
+        auto now = id(ha_time).now();
+
+        if (!now.is_valid()) {
+          it.print(64, 2,  id(font_medium), TextAlign::TOP_CENTER, "COSY TARIFF");
+          it.print(64, 22, id(font_small),  TextAlign::TOP_CENTER, "Syncing...");
+          if (id(hottub_temp).has_state()) {
+            char tbuf[10];
+            snprintf(tbuf, sizeof(tbuf), "%.1fC", id(hottub_temp).state);
+            it.print(64, 40, id(font_small), TextAlign::TOP_CENTER, tbuf);
+          }
+          return;
+        }
+
+        int total_min = now.hour * 60 + now.minute;
+
+        bool is_cheap = (total_min >= 240  && total_min < 420)  ||
+                        (total_min >= 780  && total_min < 960)  ||
+                        (total_min >= 1320);
+        bool is_peak  = (total_min >= 960  && total_min < 1140);
+
+        const char* tariff_label;
+        if      (is_cheap) tariff_label = "CHEAP RATE";
+        else if (is_peak)  tariff_label = "PEAK RATE";
+        else               tariff_label = "STANDARD";
+
+        it.print(64,  2, id(font_medium), TextAlign::TOP_CENTER, "COSY TARIFF");
+        it.print(64, 18, id(font_medium), TextAlign::TOP_CENTER, tariff_label);
+
+        if (is_cheap) {
+          if (id(hottub_temp).has_state()) {
+            char tbuf[10];
+            snprintf(tbuf, sizeof(tbuf), "%.1fC", id(hottub_temp).state);
+            it.print(64, 33, id(font_temp), TextAlign::TOP_CENTER, tbuf);
+          } else {
+            it.print(64, 33, id(font_temp), TextAlign::TOP_CENTER, "---C");
+          }
+
+        } else if (is_peak) {
+          it.print(64, 36, id(font_small), TextAlign::TOP_CENTER, "Tub blocked");
+          if (id(hottub_temp).has_state()) {
+            char tbuf[14];
+            snprintf(tbuf, sizeof(tbuf), "%.1fC", id(hottub_temp).state);
+            it.print(64, 54, id(font_hint), TextAlign::TOP_CENTER, tbuf);
+          }
+
+        } else {
+          if (id(hottub_temp).has_state()) {
+            char tbuf[10];
+            snprintf(tbuf, sizeof(tbuf), "%.1fC", id(hottub_temp).state);
+            it.print(64, 33, id(font_temp), TextAlign::TOP_CENTER, tbuf);
+          }
+          it.print(64, 54, id(font_hint), TextAlign::TOP_CENTER, "tap:override");
+        }
+      }
