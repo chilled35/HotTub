@@ -1830,37 +1830,44 @@ function calculateCosts() {
     const wt = buildPeriodTimeline(results.weekly.energy,  results.weekly.power,  results.weekly.solar,  mon);
     const mt = buildPeriodTimeline(results.monthly.energy, results.monthly.power, results.monthly.solar, rolling31);
 
-    // Need at least 2 points to compute a delta; guard against empty history
+    // Each period is guarded independently — a short daily timeline
+    // (e.g. right after midnight when the meter just reset) must not
+    // block weekly and monthly from updating.
+    const patch = {};
+
     if (dt.length >= 2) {
       const d = computeSplit(dt, today);
+      patch['input_number.hottub_today_cheap_kwh']    = d.cheap;
+      patch['input_number.hottub_today_standard_kwh'] = d.standard;
+      patch['input_number.hottub_today_peak_kwh']     = d.peak;
+      patch['input_number.hottub_today_solar_kwh']    = d.solar;
+    }
+
+    if (wt.length >= 2) {
       const w = computeSplit(wt, mon);
+      patch['input_number.hottub_week_cheap_kwh']    = w.cheap;
+      patch['input_number.hottub_week_standard_kwh'] = w.standard;
+      patch['input_number.hottub_week_peak_kwh']     = w.peak;
+      patch['input_number.hottub_week_solar_kwh']    = w.solar;
+    }
+
+    if (mt.length >= 2) {
       // Monthly split uses calendar month start (first), not the rolling31 window,
       // so the "this month" cost figure matches what you'd see on your bill.
       const m = computeSplit(mt, first);
+      patch['input_number.hottub_month_cheap_kwh']    = m.cheap;
+      patch['input_number.hottub_month_standard_kwh'] = m.standard;
+      patch['input_number.hottub_month_peak_kwh']     = m.peak;
+      patch['input_number.hottub_month_solar_kwh']    = m.solar;
+    }
 
-      // Write results back to HA. We also update the local states cache so
-      // renderEnergy() sees the new values immediately without waiting for
-      // the WebSocket state_changed event to come back.
-      const patch = {
-        'input_number.hottub_today_cheap_kwh':    d.cheap,
-        'input_number.hottub_today_standard_kwh': d.standard,
-        'input_number.hottub_today_peak_kwh':     d.peak,
-        'input_number.hottub_today_solar_kwh':    d.solar,
-        'input_number.hottub_week_cheap_kwh':     w.cheap,
-        'input_number.hottub_week_standard_kwh':  w.standard,
-        'input_number.hottub_week_peak_kwh':      w.peak,
-        'input_number.hottub_week_solar_kwh':     w.solar,
-        'input_number.hottub_month_cheap_kwh':    m.cheap,
-        'input_number.hottub_month_standard_kwh': m.standard,
-        'input_number.hottub_month_peak_kwh':     m.peak,
-        'input_number.hottub_month_solar_kwh':    m.solar,
-      };
-
-      for (const [id, val] of Object.entries(patch)) {
-        if (!states[id]) states[id] = {};
-        states[id].state = val.toString();
-        setInputNumber(id, val);
-      }
+    // Write results back to HA. We also update the local states cache so
+    // renderEnergy() sees the new values immediately without waiting for
+    // the WebSocket state_changed event to come back.
+    for (const [id, val] of Object.entries(patch)) {
+      if (!states[id]) states[id] = {};
+      states[id].state = val.toString();
+      setInputNumber(id, val);
     }
 
     // Keep timelines in module scope so renderDailyBreakdown() can use them
