@@ -287,66 +287,63 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 6. TARIFF SWITCHER
-  # Switches the active tariff on HA utility meter entities at
-  # each Cosy boundary so the built-in energy dashboard can
-  # split consumption by rate.
+  # Switches the active tariff on the utility meter entities
+  # (defined in hottub_sensors.yaml) whenever a Cosy time
+  # boundary fires OR solar output crosses the 2 kW threshold.
   #
-  # ⚠️  OPTIONAL — only needed if you have utility meters configured
-  # in your HA energy dashboard. The entities targeted here
-  # (select.hottub_energy_daily/weekly/monthly) are created by
-  # a utility_meter platform config block, NOT defined in this
-  # package. If you haven't set up utility meters, this automation
-  # runs harmlessly and silently does nothing.
+  # Priority:  solar > peak > cheap > standard
   #
-  # Cosy boundaries → tariff:
+  # Cosy time boundaries:
   #   00:00 → standard  |  04:00 → cheap  |  07:00 → standard
   #   13:00 → cheap     |  16:00 → peak   |  19:00 → standard
   #   22:00 → cheap
+  #
+  # Solar overrides any time-based tariff: when
+  # binary_sensor.hot_tub_solar_sufficient turns ON the tariff
+  # switches to "solar"; when it turns OFF the correct time-based
+  # tariff is restored automatically.
   # ══════════════════════════════════════════════════════════
   - id: hottub_tariff_switcher
     alias: "Hot Tub — Tariff Switcher"
     description: >
-      Switches utility meter tariff at each Cosy period boundary
-      and on HA startup so costs are always tracked at the correct rate.
-      Requires utility_meter entities — harmless no-op if absent.
-    mode: single
+      Switches utility meter tariff at each Cosy period boundary,
+      on HA startup, and whenever solar output crosses the threshold.
+    mode: queued
+    max: 5
 
     trigger:
       - platform: time
         at: "00:00:00"
-        id: "standard"
       - platform: time
         at: "04:00:00"
-        id: "cheap"
       - platform: time
         at: "07:00:00"
-        id: "standard"
       - platform: time
         at: "13:00:00"
-        id: "cheap"
       - platform: time
         at: "16:00:00"
-        id: "peak"
       - platform: time
         at: "19:00:00"
-        id: "standard"
       - platform: time
         at: "22:00:00"
-        id: "cheap"
+      - platform: state
+        entity_id: binary_sensor.hot_tub_solar_sufficient
+        not_to:
+          - unknown
+          - unavailable
       - platform: homeassistant
         event: start
-        id: "startup"
 
     action:
       - variables:
           tariff: >
-            {% if trigger.id == 'startup' %}
+            {% if is_state('binary_sensor.hot_tub_solar_sufficient', 'on') %}
+              solar
+            {% else %}
               {% set h = now().hour %}
               {% if h >= 16 and h < 19 %}peak
               {% elif (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}cheap
               {% else %}standard{% endif %}
-            {% else %}
-              {{ trigger.id }}
             {% endif %}
 
       - service: select.select_option
