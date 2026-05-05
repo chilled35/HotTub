@@ -198,8 +198,8 @@ interval:
             id(override_was_active) = true;
           }
 
-      // override_active_sensor re-evaluates its lambda each second automatically.
-      // HA watches the resulting state change — no explicit service call needed.
+      # override_active_sensor re-evaluates its lambda each second automatically.
+      # HA watches the resulting state change — no explicit service call needed.
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 # ConsiderMeVexed by Chequered Ink — not on Google Fonts, must be local.
