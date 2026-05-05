@@ -1009,24 +1009,19 @@ const E = {
   solar:            'sensor.power_meter',
   solarThreshold:   'input_number.hottub_solar_threshold',
   rate:             'sensor.hot_tub_electricity_rate',
-  // Raw energy source + snapshots for total kWh
-  energyRaw:          'sensor.appliance_hottub_energy',
-  snapMidnight:       'input_number.hottub_kwh_snap_midnight',
-  snapWeek:           'input_number.hottub_kwh_snap_week',
-  snapMonth:          'input_number.hottub_kwh_snap_month',
-  // Per-tariff kWh from recorder (updated every 30 min)
-  energyDailyCheap:   'input_number.hottub_today_cheap_kwh',
-  energyDailyStd:     'input_number.hottub_today_standard_kwh',
-  energyDailyPeak:    'input_number.hottub_today_peak_kwh',
-  energyDailySolar:   'input_number.hottub_today_solar_kwh',
-  energyWeeklyCheap:  'input_number.hottub_week_cheap_kwh',
-  energyWeeklyStd:    'input_number.hottub_week_standard_kwh',
-  energyWeeklyPeak:   'input_number.hottub_week_peak_kwh',
-  energyWeeklySolar:  'input_number.hottub_week_solar_kwh',
-  energyMonthlyCheap: 'input_number.hottub_month_cheap_kwh',
-  energyMonthlyStd:   'input_number.hottub_month_standard_kwh',
-  energyMonthlyPeak:  'input_number.hottub_month_peak_kwh',
-  energyMonthlySolar: 'input_number.hottub_month_solar_kwh',
+  // Per-tariff kWh from utility meters (tracked server-side in HA)
+  energyDailyCheap:   'sensor.hottub_energy_daily_cheap',
+  energyDailyStd:     'sensor.hottub_energy_daily_standard',
+  energyDailyPeak:    'sensor.hottub_energy_daily_peak',
+  energyDailySolar:   'sensor.hottub_energy_daily_solar',
+  energyWeeklyCheap:  'sensor.hottub_energy_weekly_cheap',
+  energyWeeklyStd:    'sensor.hottub_energy_weekly_standard',
+  energyWeeklyPeak:   'sensor.hottub_energy_weekly_peak',
+  energyWeeklySolar:  'sensor.hottub_energy_weekly_solar',
+  energyMonthlyCheap: 'sensor.hottub_energy_monthly_cheap',
+  energyMonthlyStd:   'sensor.hottub_energy_monthly_standard',
+  energyMonthlyPeak:  'sensor.hottub_energy_monthly_peak',
+  energyMonthlySolar: 'sensor.hottub_energy_monthly_solar',
   // Cost sensors
   costDaily:          'sensor.hot_tub_today_cost',
   costWeekly:         'sensor.hot_tub_week_cost',
@@ -1134,7 +1129,7 @@ function handleMsg(msg) {
       send({ type: 'get_states' }, (r) => {
         r.result.forEach(s => { states[s.entity_id] = s; });
         renderAll();
-        startCostCalculation();
+        renderDailyBreakdown();
       });
       // Subscribe to changes
       send({ type: 'subscribe_events', event_type: 'state_changed' });
@@ -1190,10 +1185,9 @@ function renderEntity(id) {
   if (id === E.rate) renderRate();
 
   const energyIds = [
-    E.energyRaw, E.snapMidnight, E.snapWeek, E.snapMonth,
-    E.energyDailyCheap, E.energyDailyStd, E.energyDailyPeak,
-    E.energyWeeklyCheap, E.energyWeeklyStd, E.energyWeeklyPeak,
-    E.energyMonthlyCheap, E.energyMonthlyStd, E.energyMonthlyPeak,
+    E.energyDailyCheap,   E.energyDailyStd,   E.energyDailyPeak,   E.energyDailySolar,
+    E.energyWeeklyCheap,  E.energyWeeklyStd,  E.energyWeeklyPeak,  E.energyWeeklySolar,
+    E.energyMonthlyCheap, E.energyMonthlyStd, E.energyMonthlyPeak, E.energyMonthlySolar,
     E.costDaily, E.costWeekly, E.costMonthly
   ];
   if (energyIds.includes(id)) renderEnergy();
@@ -1577,405 +1571,98 @@ function showSetupError(msg) {
 }
 
 
-// ── COST CALCULATION FROM HISTORY ─────────────────────────
-// This is the most complex part of the dashboard. Home Assistant
-// stores every state change in a database (the "recorder"). We
-// query that history for the energy meter, solar output, and pump
-// wattage, then replay those readings to work out:
-//   - How many kWh were used in each tariff window (cheap/std/peak)
-//   - How many kWh were covered by solar (no grid cost)
-//
-// Why do this in the browser rather than in HA automations?
-//   HA's built-in statistics reset at midnight and month boundaries,
-//   which causes a brief period of incorrect readings. By querying
-//   a rolling 31-day window and computing totals ourselves, we
-//   avoid that reset bug entirely and survive HA restarts.
-//
-// Results are written back to HA input_number entities, which
-// the template sensors (hottub_sensors.yaml) read to produce the
-// cost figures. The 23:55 automation also reads from those sensors.
-//
-// Runs once on connection, then every 5 minutes.
-
-let costCalcInterval    = null;
-let monthlyTimeline     = null;  // pre-built timeline for the rolling 31-day window
-let monthlyFirst        = null;  // Date: start of the rolling 31-day window
-let monthlyEnergySeries = null;  // raw energy readings for the rolling window
-let weeklyTimeline      = null;  // pre-built timeline for the current week
-let weeklyMon           = null;  // Date: Monday midnight of current week
-
-function startCostCalculation() {
-  clearInterval(costCalcInterval);
-  calculateCosts();
-  costCalcInterval = setInterval(calculateCosts, 5 * 60 * 1000); // every 5 minutes
-}
-
-// Returns midnight at the start of the current calendar week (Monday).
 function getMondayMidnight() {
   const now = new Date();
-  const day = now.getDay();                      // 0=Sun … 6=Sat
-  const daysBack = day === 0 ? 6 : day - 1;     // days back to reach Monday
+  const day = now.getDay();
+  const daysBack = day === 0 ? 6 : day - 1;
   const d = new Date(now);
   d.setDate(d.getDate() - daysBack);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-// Maps a local hour (0–23) to the Octopus Cosy tariff band name.
-// Must match the logic in hottub_sensors.yaml exactly.
-function tariffForHour(h) {
-  if ((h >= 4 && h <= 6) || (h >= 13 && h <= 15) || h >= 22) return 'cheap';
-  if (h >= 16 && h <= 18) return 'peak';
-  return 'standard';
-}
-
-// ── TIMESTAMP HELPER ─────────────────────────────────────
-// HA's minimal_response format uses compact keys (lc/lu) instead of
-// the verbose last_changed/last_updated. This helper handles both.
-function getTs(r) {
-  const raw = r.lc ?? r.lu ?? r.last_changed ?? r.last_updated;
-  if (raw == null) return null;
-  // HA may send timestamps as Unix seconds (number) or ISO strings
-  const t = typeof raw === 'number' ? new Date(raw * 1000) : new Date(raw);
-  return isNaN(t.getTime()) ? null : t;
-}
-
-// Returns local midnight for a given Date, respecting DST/BST.
-// Using setHours(0,0,0,0) applies the local timezone offset, which
-// ensures day-boundary comparisons work correctly year-round.
-function localMidnight(d) {
-  const r = new Date(d);
-  r.setHours(0, 0, 0, 0);
-  return r;
-}
-
-// ── PARSE SENSOR HISTORY ──────────────────────────────────
-// Converts the raw HA history response array into a clean
-// [{t: Date, v: number}] array, sorted oldest-first.
-// Non-numeric states (e.g. "unavailable") are silently skipped.
-function parseSeries(hist) {
-  const out = [];
-  for (const r of (hist || [])) {
-    const t = getTs(r); if (!t) continue;
-    const v = parseFloat(r.s); if (isNaN(v)) continue;
-    out.push({ t, v });
-  }
-  out.sort((a, b) => a.t - b.t);
-  return out;
-}
-
-// ── COMPUTE SPLIT ─────────────────────────────────────────
-// Iterates a pre-built timeline and assigns each kWh delta to
-// cheap / standard / peak / solar based on:
-//   - the hour the energy was recorded (→ tariff band)
-//   - the solar output at that moment (→ solar fraction)
-//
-// t1: only count deltas AFTER this timestamp (period start)
-// t2: stop counting after this timestamp (optional — if omitted,
-//     processes to the end of the timeline)
-//
-// "Carry-forward" approach: when there's no solar/power reading
-// at an exact energy timestamp, we use the most recent reading
-// we've seen so far (last known value carries forward).
-function computeSplit(timeline, t1, t2 = null) {
-  const b = { cheap: 0, standard: 0, peak: 0, solar: 0 };
-  let prevEnergy = null, prevT = null;
-  const threshold = getFloat(E.solarThreshold, 2000);
-
-  for (const pt of timeline) {
-    if (pt.t < t1) { prevEnergy = pt.energy; prevT = pt.t; continue; }
-    if (t2 !== null && pt.t > t2) break;
-
-    if (prevEnergy !== null && prevT !== null) {
-      const deltaKwh = Math.max(pt.energy - prevEnergy, 0);
-      if (deltaKwh > 0) {
-        const tubW   = pt.tubW   ?? 0;
-        const solarW = pt.solarW ?? 0;
-        // Solar fraction: proportion of the tub's draw covered by solar.
-        // If we have live watt readings, use them; otherwise fall back to
-        // a binary check (solar output above/below threshold).
-        const solarFrac = tubW > 0 ? Math.min(solarW / tubW, 1) : (solarW >= threshold ? 1 : 0);
-        const gridFrac  = 1 - solarFrac;
-        b.solar += deltaKwh * solarFrac;
-        if (gridFrac > 0) {
-          b[tariffForHour(pt.t.getHours())] += deltaKwh * gridFrac;
-        }
-      }
-    }
-
-    prevEnergy = pt.energy;
-    prevT      = pt.t;
-  }
-
-  return {
-    cheap:    +b.cheap.toFixed(3),
-    standard: +b.standard.toFixed(3),
-    peak:     +b.peak.toFixed(3),
-    solar:    +b.solar.toFixed(3)
-  };
-}
-
-function calculateCosts() {
-  const now   = new Date();
-  const today = new Date(now); today.setHours(0, 0, 0, 0);
-  const mon   = getMondayMidnight();
-  const first = new Date(now); first.setDate(1); first.setHours(0, 0, 0, 0);
-
-  // Rolling 31-day window instead of "start of month" so the daily
-  // breakdown always has a full 7 days visible regardless of where
-  // we are in the calendar month, and avoids the midnight-reset bug
-  // where the new month briefly shows zero before history catches up.
-  const rolling31 = new Date(now.getTime() - 31 * 24 * 3_600_000);
-
-  // Each period queries a 1-hour pre-buffer before its start so we
-  // always have a baseline energy reading to compute the first delta
-  // from (the tub may not have changed state exactly at midnight/Monday).
-  const periods = [
-    { key: 'daily',   start: today,     energyStart: new Date(today.getTime()     - 3_600_000) },
-    { key: 'weekly',  start: mon,       energyStart: new Date(mon.getTime()       - 3_600_000) },
-    { key: 'monthly', start: rolling31, energyStart: new Date(rolling31.getTime() - 3_600_000) },
-  ];
-
-  let completed = 0;
-  const results = {};
-
-  function onPeriodComplete(key, energy, power, solar) {
-    results[key] = { energy, power, solar };
-    completed++;
-    if (completed === periods.length) finalise();
-  }
-
-  for (const p of periods) {
-    (function(period) {
-      // Monthly queries energy only — solar updates every 10 s, so fetching
-      // 31 days of it produces hundreds of thousands of records and can
-      // stall the WebSocket. Daily/weekly are short enough to be safe.
-      const monthlyOnly = period.key === 'monthly';
-      let r = {}, pending = monthlyOnly ? 1 : 3;
-      function got(k, v) { r[k] = v; pending--; if (pending === 0) onPeriodComplete(period.key, r.energy, r.power || [], r.solar || []); }
-
-      send({
-        type: 'history/history_during_period',
-        start_time: period.energyStart.toISOString(),
-        end_time: now.toISOString(),
-        entity_ids: ['sensor.appliance_hottub_energy'],
-        no_attributes: true, minimal_response: true, significant_changes_only: false
-      }, (msg) => got('energy', msg.success && msg.result ? msg.result['sensor.appliance_hottub_energy'] : []));
-
-      if (!monthlyOnly) {
-        send({
-          type: 'history/history_during_period',
-          start_time: period.start.toISOString(),
-          end_time: now.toISOString(),
-          entity_ids: ['sensor.appliance_hottub_power'],
-          no_attributes: true, minimal_response: true, significant_changes_only: false
-        }, (msg) => got('power', msg.success && msg.result ? msg.result['sensor.appliance_hottub_power'] : []));
-
-        send({
-          type: 'history/history_during_period',
-          start_time: period.start.toISOString(),
-          end_time: now.toISOString(),
-          entity_ids: ['sensor.power_meter'],
-          no_attributes: true, minimal_response: true, significant_changes_only: false
-        }, (msg) => got('solar', msg.success && msg.result ? msg.result['sensor.power_meter'] : []));
-      }
-    })(p);
-  }
-
-  // Merges the three raw history series into a single timeline of
-  // [{t, energy, tubW, solarW}] points sorted by time.
-  // The carry-forward technique (pi/si pointer scan) ensures each
-  // energy reading is paired with the most recent power/solar value
-  // without requiring them to share exact timestamps.
-  function buildPeriodTimeline(energy, power, solar, periodStart) {
-    const energySeries = parseSeries(energy);
-    const powerSeries  = parseSeries(power);
-    // Solar sensor reports kW — convert to W to match the wattage threshold
-    const solarSeries  = (solar || [])
-      .map(r => { const t = getTs(r); const v = parseFloat(r.s); return (t && !isNaN(v)) ? { t, v: v * 1000 } : null; })
-      .filter(Boolean)
-      .sort((a, b) => a.t - b.t);
-
-    // Find the last energy reading AT OR BEFORE periodStart — this becomes
-    // the baseline from which we compute the first delta. Without it, any
-    // energy consumed between the true period start and the first recorded
-    // reading would be silently lost.
-    let baseline = null;
-    for (const e of energySeries) {
-      if (e.t <= periodStart) baseline = e;
-      else break;
-    }
-
-    let tubW = 0, solarW = 0, pi = 0, si = 0;
-    const timeline = [];
-
-    if (baseline) {
-      timeline.push({ t: periodStart, energy: baseline.v, tubW: 0, solarW: 0 });
-    }
-
-    for (const e of energySeries) {
-      if (e.t <= periodStart) continue; // skip pre-period readings used only for baseline
-      // Advance power and solar pointers to the latest reading at or before this energy point
-      while (pi < powerSeries.length && powerSeries[pi].t  <= e.t) { tubW   = powerSeries[pi].v;  pi++; }
-      while (si < solarSeries.length && solarSeries[si].t  <= e.t) { solarW = solarSeries[si].v; si++; }
-      timeline.push({ t: e.t, energy: e.v, tubW, solarW });
-    }
-    return timeline;
-  }
-
-  // Called once all three period queries complete. Computes tariff splits,
-  // writes results to HA, then triggers a UI refresh.
-  function finalise() {
-    const dt = buildPeriodTimeline(results.daily.energy,   results.daily.power,   results.daily.solar,   today);
-    const wt = buildPeriodTimeline(results.weekly.energy,  results.weekly.power,  results.weekly.solar,  mon);
-    const mt = buildPeriodTimeline(results.monthly.energy, results.monthly.power, results.monthly.solar, rolling31);
-
-    // Each period is guarded independently — a short daily timeline
-    // (e.g. right after midnight when the meter just reset) must not
-    // block weekly and monthly from updating.
-    const patch = {};
-
-    if (dt.length >= 2) {
-      const d = computeSplit(dt, today);
-      patch['input_number.hottub_today_cheap_kwh']    = d.cheap;
-      patch['input_number.hottub_today_standard_kwh'] = d.standard;
-      patch['input_number.hottub_today_peak_kwh']     = d.peak;
-      patch['input_number.hottub_today_solar_kwh']    = d.solar;
-    }
-
-    if (wt.length >= 2) {
-      const w = computeSplit(wt, mon);
-      patch['input_number.hottub_week_cheap_kwh']    = w.cheap;
-      patch['input_number.hottub_week_standard_kwh'] = w.standard;
-      patch['input_number.hottub_week_peak_kwh']     = w.peak;
-      patch['input_number.hottub_week_solar_kwh']    = w.solar;
-    }
-
-    if (mt.length >= 2) {
-      // Monthly split uses calendar month start (first), not the rolling31 window,
-      // so the "this month" cost figure matches what you'd see on your bill.
-      const m = computeSplit(mt, first);
-      patch['input_number.hottub_month_cheap_kwh']    = m.cheap;
-      patch['input_number.hottub_month_standard_kwh'] = m.standard;
-      patch['input_number.hottub_month_peak_kwh']     = m.peak;
-      patch['input_number.hottub_month_solar_kwh']    = m.solar;
-    }
-
-    // Write results back to HA. We also update the local states cache so
-    // renderEnergy() sees the new values immediately without waiting for
-    // the WebSocket state_changed event to come back.
-    for (const [id, val] of Object.entries(patch)) {
-      if (!states[id]) states[id] = {};
-      states[id].state = val.toString();
-      setInputNumber(id, val);
-    }
-
-    // Keep timelines in module scope so renderDailyBreakdown() can use them
-    monthlyTimeline     = mt;
-    monthlyFirst        = rolling31;
-    monthlyEnergySeries = parseSeries(results.monthly.energy);
-    weeklyTimeline      = wt;
-    weeklyMon           = mon;
-    renderEnergy();
-    renderDailyBreakdown();
-  }
-}
-
-// ── DAILY BREAKDOWN ───────────────────────────────────────
-// Shows the last 7 days of usage, one row per day.
-// For days within the current week we use the weekly timeline
-// (which includes solar/power data, so tariff splits are accurate).
-// For older days we fall back to the monthly timeline, which only
-// has raw energy readings — tariff splits are still computed but
-// solar attribution is less precise without live wattage data.
-// The blendedRate is only used for the rough kWh→cost estimate in
-// the initial row build; the final trueCost comes from computeSplit.
+// ── DAILY BREAKDOWN (statistics-based) ───────────────────
+// Queries HA long-term statistics (recorder/statistics_during_period)
+// for the last 7 days and renders a per-day tariff breakdown.
+// Statistics come from the utility_meter entities tracked server-side
+// in HA — always accurate, no JS computation required.
 function renderDailyBreakdown() {
   const container = document.getElementById('daily-breakdown-rows');
   const wrapper   = document.getElementById('daily-breakdown');
   if (!container || !wrapper) return;
   wrapper.style.display = 'block';
+  container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading…</div>';
 
-  const series = monthlyEnergySeries;
-  if (!series || series.length === 0) {
-    container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No data available yet</div>';
-    return;
-  }
+  const now = new Date();
+  const startDate = new Date(now);
+  startDate.setDate(startDate.getDate() - 7);
+  startDate.setHours(0, 0, 0, 0);
 
-  const now  = new Date();
-  const cheapR = getFloat('input_number.hottub_rate_cheap',    12);
-  const stdR   = getFloat('input_number.hottub_rate_standard', 24);
-  const peakR  = getFloat('input_number.hottub_rate_peak',     38);
-  const blendedRate = (cheapR * 9 + stdR * 15) / 24; // weighted avg Cosy rate
-
-  const dayNames   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-  const rows = [];
-  for (let i = 1; i <= 7; i++) {
-    const dayEnd   = localMidnight(now); dayEnd.setDate(dayEnd.getDate() - (i-1));
-    const dayStart = new Date(dayEnd); dayStart.setDate(dayStart.getDate() - 1);
-
-    // Find last energy value at or before dayStart and dayEnd
-    let eStart = null, eEnd = null;
-    for (const pt of series) {
-      if (pt.t <= dayStart) eStart = pt.v;
-      if (pt.t <= dayEnd)   eEnd   = pt.v;
+  send({
+    type: 'recorder/statistics_during_period',
+    start_time: startDate.toISOString(),
+    statistic_ids: [
+      'sensor.hottub_energy_daily_cheap',
+      'sensor.hottub_energy_daily_standard',
+      'sensor.hottub_energy_daily_peak',
+      'sensor.hottub_energy_daily_solar'
+    ],
+    period: 'day',
+    types: ['change']
+  }, (msg) => {
+    if (!msg.success || !msg.result) {
+      container.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">No data available</div>';
+      return;
     }
 
-    const kwh  = (eStart !== null && eEnd !== null) ? Math.max(eEnd - eStart, 0) : 0;
-    const cost = kwh * blendedRate / 100;
-    const label = `${dayNames[dayStart.getDay()]} ${dayStart.getDate()} ${monthNames[dayStart.getMonth()]}`;
+    const result  = msg.result;
+    const cheapR  = getFloat(E.rateC, 12);
+    const stdR    = getFloat(E.rateS, 24);
+    const peakR   = getFloat(E.rateP, 38);
 
-    rows.push({ label, kwh: +kwh.toFixed(2), cost: +cost.toFixed(2), hasData: eStart !== null && eEnd !== null, dayStart, dayEnd });
-  }
-
-  container.innerHTML = rows.map(r => {
-    const colour = r.kwh > 0 ? 'var(--text)' : 'var(--text-muted)';
-    let cheapKwh = 0, stdKwh = 0, peakKwh = 0, solarKwh = 0, trueCost = 0;
-
-    // Use weekly timeline (has solar/power) for days in current week,
-    // monthly (energy only) for older days
-    const tl = (weeklyTimeline && weeklyMon && r.dayStart >= weeklyMon)
-               ? weeklyTimeline : monthlyTimeline;
-
-    if (tl && r.kwh > 0) {
-      const split = computeSplit(tl, r.dayStart, r.dayEnd);
-      cheapKwh  = split.cheap;
-      stdKwh    = split.standard;
-      peakKwh   = split.peak;
-      solarKwh  = split.solar;
-      trueCost  = ((cheapKwh * cheapR) + (stdKwh * stdR) + (peakKwh * peakR)) / 100;
+    // Build a map of local-date-string → {cheap, standard, peak, solar}
+    // entry.start is an ISO string; parse to local date for the key.
+    const dayMap = {};
+    const slots = { cheap: 'sensor.hottub_energy_daily_cheap', standard: 'sensor.hottub_energy_daily_standard', peak: 'sensor.hottub_energy_daily_peak', solar: 'sensor.hottub_energy_daily_solar' };
+    for (const [tariff, sid] of Object.entries(slots)) {
+      for (const entry of (result[sid] || [])) {
+        const d = new Date(entry.start);
+        const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        if (!dayMap[key]) dayMap[key] = { cheap: 0, standard: 0, peak: 0, solar: 0 };
+        dayMap[key][tariff] += Math.max(entry.change ?? 0, 0);
+      }
     }
 
-    const costStr = r.kwh > 0 ? '£' + trueCost.toFixed(2) : '—';
+    const dayNames   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-    return `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:${r.kwh > 0 ? '8' : '0'}px;">
-        <span style="font-size:13px;color:var(--text-dim);">${r.label}</span>
-        <span style="font-size:13px;color:${r.kwh > 0 ? 'var(--override)' : 'var(--text-muted)'};">${costStr}</span>
-      </div>
-      ${r.kwh > 0 ? `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center;">
-        <div>
-          <div style="font-size:10px;color:var(--cheap);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Cheap</div>
-          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${cheapKwh.toFixed(3)} kWh</div>
+    const rows = [];
+    for (let i = 1; i <= 7; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const key  = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      const data = dayMap[key] || { cheap: 0, standard: 0, peak: 0, solar: 0 };
+      const kwh  = data.cheap + data.standard + data.peak + data.solar;
+      const cost = ((data.cheap * cheapR) + (data.standard * stdR) + (data.peak * peakR)) / 100;
+      rows.push({ label: `${dayNames[d.getDay()]} ${d.getDate()} ${monthNames[d.getMonth()]}`, kwh: +kwh.toFixed(3), cost: +cost.toFixed(2), data });
+    }
+
+    container.innerHTML = rows.map(r => `
+      <div style="padding:10px 0;border-bottom:1px solid var(--border);">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:${r.kwh > 0 ? '8' : '0'}px;">
+          <span style="font-size:13px;color:var(--text-dim);">${r.label}</span>
+          <span style="font-size:13px;color:${r.kwh > 0 ? 'var(--override)' : 'var(--text-muted)'};">${r.kwh > 0 ? '£' + r.cost.toFixed(2) : '—'}</span>
         </div>
-        <div>
-          <div style="font-size:10px;color:var(--text-dim);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Standard</div>
-          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${stdKwh.toFixed(3)} kWh</div>
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--peak);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Peak</div>
-          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${peakKwh.toFixed(3)} kWh</div>
-        </div>
-        <div>
-          <div style="font-size:10px;color:var(--solar);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">☀️ Free</div>
-          <div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--solar);font-variant-numeric:tabular-nums;">${solarKwh.toFixed(3)} kWh</div>
-        </div>
-      </div>` : `<div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text-muted);">0.000 kWh</div>`}
-    </div>`;
-  }).join('');
+        ${r.kwh > 0 ? `<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;text-align:center;">
+          <div><div style="font-size:10px;color:var(--cheap);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Cheap</div><div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${r.data.cheap.toFixed(3)} kWh</div></div>
+          <div><div style="font-size:10px;color:var(--text-dim);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Standard</div><div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${r.data.standard.toFixed(3)} kWh</div></div>
+          <div><div style="font-size:10px;color:var(--peak);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">Peak</div><div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text);font-variant-numeric:tabular-nums;">${r.data.peak.toFixed(3)} kWh</div></div>
+          <div><div style="font-size:10px;color:var(--solar);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:2px;">☀️ Free</div><div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--solar);font-variant-numeric:tabular-nums;">${r.data.solar.toFixed(3)} kWh</div></div>
+        </div>` : `<div style="font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--text-muted);">0.000 kWh</div>`}
+      </div>`).join('');
+  });
 }
+
 
 // ── INIT ──────────────────────────────────────────────────
 // Entry point — runs once the HTML is fully parsed.
