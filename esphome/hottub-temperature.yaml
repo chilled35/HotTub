@@ -111,6 +111,8 @@ sensor:
     name: "Temperature"
     id: hottub_temp
     update_interval: 30s
+    filters:
+      - filter_out: nan          # discard checksum-failed readings; hold last valid value
 
   - platform: wifi_signal
     name: "WiFi Signal"
