@@ -8,14 +8,14 @@ The system automatically heats the tub during cheap electricity windows, pauses 
 
 ## Features
 
-- **Tariff-aware scheduling** — Octopus Cosy windows (Cheap 04:00–07:00 / 13:00–16:00 / 22:00–00:00, Peak 16:00–19:00) built in
+- **Tariff-aware scheduling** — Octopus Cosy windows (Cheap 04:00–07:00 / 13:00–16:00 / 22:00–00:00, Peak 16:00–19:00) built in; each cheap window independently toggleable
 - **Solar heating** — turns on automatically when solar production exceeds a configurable watt threshold
 - **Peak block** — hard-forces the tub off 16:00–19:00 regardless of other conditions
 - **Physical override** — capacitive touch sensor on the OLED unit activates 30/60/90 min override with countdown display
 - **Dashboard override** — override also controllable from the web dashboard with configurable duration
-- **OLED status display** — 128×64 OLED shows current tariff, water temperature, and countdown timer during override
+- **OLED status display** — 128×64 OLED shows water temperature in standby; HH:MM:SS countdown during override
 - **iOS push notifications** — daily, weekly, and monthly energy/cost reports to iPhone
-- **Energy & cost tracking** — per-tariff kWh split (Cheap / Standard / Peak / Solar) using a rolling 31-day WebSocket history calculator; immune to HA restarts
+- **Energy & cost tracking** — server-side `utility_meter` entities accumulate kWh per tariff (Cheap / Standard / Peak / Solar) continuously in HA — accurate regardless of restarts or whether the dashboard is open
 - **Voltage monitoring** — alerts if plug voltage falls outside 210–250V
 - **Custom HTML dashboard** — standalone panel with live WebSocket connection; no Lovelace cards required
 
@@ -44,7 +44,7 @@ The system automatically heats the tub during cheap electricity windows, pauses 
 |---|---|---|
 | I2C SCL (OLED) | D1 | GPIO5 |
 | I2C SDA (OLED) | D2 | GPIO4 |
-| DS18B20 Data | D5 | GPIO14 (internal pull-up) |
+| DS18B20 Data | D5 | GPIO14 (4.7kΩ pull-up to 3.3V) |
 | TTP223 Signal | D6 | GPIO12 (inverted) |
 
 ---
@@ -71,9 +71,10 @@ ha-hottub-controller/
 │
 ├── packages/
 │   └── hottub/
-│       ├── hottub_helpers.yaml         All input_number, input_boolean,
+│       ├── hottub_helpers.yaml         input_number, input_boolean,
 │       │                               input_select, timer helpers
-│       ├── hottub_sensors.yaml         Template sensors and binary sensors
+│       ├── hottub_sensors.yaml         utility_meter energy tracking,
+│       │                               template sensors, binary sensors
 │       ├── hottub_automations.yaml     Smart controller, override, tariff
 │       │                               switcher, peak block, daily store,
 │       │                               ESPHome bridge automations
@@ -99,11 +100,10 @@ Add the packages block to your `configuration.yaml`:
 
 ```yaml
 homeassistant:
-  packages:
-    hottub: !include_dir_named packages/hottub
+  packages: !include_dir_named packages
 ```
 
-Restart Home Assistant.
+**Full restart** is required after first install — `utility_meter` entities need a restart to initialise. After restarting, manually trigger the **Hot Tub — Tariff Switcher** automation once from the Automations UI to set the correct starting tariff on the new meters.
 
 ### 2. Dashboard
 
@@ -118,9 +118,10 @@ On first load the dashboard will prompt for your HA URL and a long-lived access 
 1. Copy `esphome/hottub-temperature.yaml` to `/config/esphome/`
 2. Copy the `ConsidermevexedRegular-ExLe.ttf` font file to `/config/esphome/fonts/`  
    (Download from [FontSpace — ConsiderMeVexed by Chequered Ink](https://www.fontspace.com/considermevexed-font-f19295))
-3. Edit the YAML to set your WiFi credentials in `secrets.yaml`
-4. Flash via the ESPHome dashboard (USB first flash, OTA thereafter)
-5. Adopt the device in HA: Settings → Devices & Services → ESPHome
+3. Add WiFi credentials and passwords to `secrets.yaml`
+4. Update the DS18B20 `address:` in the YAML to match your sensor (scan the bus on first flash to find it)
+5. Flash via the ESPHome dashboard (USB first flash, OTA thereafter)
+6. Adopt the device in HA: Settings → Devices & Services → ESPHome
 
 ### 4. Notifications
 
@@ -137,14 +138,37 @@ Update `notify.mobile_app_jasons_iphone` in `hottub_notifications.yaml` to match
 | `switch.appliance_hottub` | Zigbee plug — controls tub power |
 | `sensor.appliance_hottub_power` | Running wattage (W) |
 | `sensor.appliance_hottub_voltage` | Supply voltage (V) |
-| `sensor.appliance_hottub_energy` | Cumulative energy (kWh) |
-| `sensor.power_meter` | Solar production (kW) |
+| `sensor.appliance_hottub_energy` | Cumulative energy (kWh, resets at midnight) |
+| `sensor.power_meter` | Solar production (**kW** — multiplied ×1000 internally) |
 
-### Created by this package
+### Created by this package — Helpers
 
 | Entity | Purpose |
 |---|---|
-| `sensor.hot_tub_electricity_rate` | Current Cosy tariff rate (p/kWh) |
+| `input_number.hottub_target_temp` | Target water temperature (°C) |
+| `input_number.hottub_solar_threshold` | Min solar production to activate solar heating (W) |
+| `input_number.hottub_override_duration` | Dashboard override auto-cancel time (h) |
+| `input_number.hottub_rate_cheap` | Cheap tariff rate (p/kWh) |
+| `input_number.hottub_rate_standard` | Standard tariff rate (p/kWh) |
+| `input_number.hottub_rate_peak` | Peak tariff rate (p/kWh) |
+| `input_number.hottub_yesterday_energy` | Yesterday's kWh snapshot (saved at 23:55) |
+| `input_number.hottub_yesterday_cost` | Yesterday's cost snapshot in pence (saved at 23:55) |
+| `input_boolean.hottub_schedule_enabled` | Master on/off gate for all scheduled heating |
+| `input_boolean.hottub_schedule_solar` | Enable solar heating |
+| `input_boolean.hottub_schedule_cheap_0407` | Enable cheap rate 04:00–07:00 window |
+| `input_boolean.hottub_schedule_cheap_1316` | Enable cheap rate 13:00–16:00 window |
+| `input_boolean.hottub_schedule_cheap_2200` | Enable cheap rate 22:00–00:00 window |
+| `input_boolean.hottub_schedule_standard` | Enable standard rate heating |
+| `input_boolean.hottub_in_use_override` | Manual override active |
+| `input_select.hottub_control_mode` | Current mode (Solar / Cheap Rate / Override / Peak Block / Off) |
+| `timer.hottub_override_timer` | Dashboard override countdown |
+
+### Created by this package — Sensors
+
+| Entity | Purpose |
+|---|---|
+| `sensor.hot_tub_electricity_rate` | Current Cosy tariff rate (p/kWh) with `tariff` and `next_change` attributes |
+| `sensor.hot_tub_today_total_kwh` | Today's total kWh (all tariffs combined) |
 | `sensor.hot_tub_today_cost` | Today's running cost (pence) |
 | `sensor.hot_tub_week_cost` | This week's cost (pence) |
 | `sensor.hot_tub_month_cost` | This month's cost (pence) |
@@ -152,11 +176,18 @@ Update `notify.mobile_app_jasons_iphone` in `hottub_notifications.yaml` to match
 | `binary_sensor.hot_tub_peak_block_active` | True 16:00–19:00 |
 | `binary_sensor.hot_tub_solar_sufficient` | True when solar ≥ threshold |
 | `binary_sensor.hot_tub_voltage_alert` | True if voltage outside 210–250V |
-| `input_boolean.hottub_schedule_solar` | Enable solar heating schedule |
-| `input_boolean.hottub_schedule_cheap` | Enable cheap rate schedule |
-| `input_boolean.hottub_in_use_override` | Manual override active |
-| `input_select.hottub_control_mode` | Current mode (Solar/Cheap Rate/Override/Peak Block/Off) |
-| `timer.hottub_override_timer` | Dashboard override countdown |
+
+### Created by this package — Utility Meters
+
+Each meter has four tariff slots: `cheap`, `standard`, `peak`, `solar`. The active tariff is switched by the tariff switcher automation at every Cosy boundary and when solar crosses the threshold.
+
+| Entity pattern | Cycle |
+|---|---|
+| `sensor.hottub_energy_daily_<tariff>` | Resets daily |
+| `sensor.hottub_energy_weekly_<tariff>` | Resets weekly (Monday) |
+| `sensor.hottub_energy_monthly_<tariff>` | Resets monthly (1st) |
+
+The corresponding select entities (`select.hottub_energy_daily/weekly/monthly`) control the active tariff slot.
 
 ### ESPHome entities (D1 Mini)
 
@@ -174,12 +205,28 @@ Update `notify.mobile_app_jasons_iphone` in `hottub_notifications.yaml` to match
 The main automation (`hottub_smart_controller`) runs every 5 minutes and on key state changes. It evaluates conditions in strict priority order:
 
 ```
-Priority 1 — PEAK BLOCK    (16:00–19:00 and override not active)  → OFF
-Priority 2 — OVERRIDE      (input_boolean.hottub_in_use_override)  → ON
-Priority 3 — SOLAR         (solar_sufficient AND schedule_solar)   → ON
-Priority 4 — CHEAP RATE    (cheap_rate_active AND schedule_cheap)  → ON
-Default    — ALL OTHER                                              → OFF
+Priority 0 — MASTER GATE   (hottub_schedule_enabled OFF, override not active) → OFF
+Priority 1 — PEAK BLOCK    (16:00–19:00 and override not active)              → OFF
+Priority 2 — OVERRIDE      (input_boolean.hottub_in_use_override ON)          → ON
+Priority 3 — SOLAR         (solar_sufficient AND schedule_solar)               → ON
+Priority 4 — CHEAP RATE    (cheap_rate_active AND schedule_cheap_*)            → ON
+Default    — ALL OTHER                                                          → OFF
 ```
+
+The master gate (`input_boolean.hottub_schedule_enabled`) must be ON for any scheduled heating. Manual override bypasses it intentionally.
+
+---
+
+## Energy & Cost Tracking
+
+Energy is tracked server-side using HA's `utility_meter` integration — no dashboard needs to be open. Three meters (daily / weekly / monthly) each have four tariff slots:
+
+- **Solar** — takes priority when `binary_sensor.hot_tub_solar_sufficient` is ON
+- **Cheap** — 04:00–07:00, 13:00–16:00, 22:00–00:00
+- **Peak** — 16:00–19:00
+- **Standard** — all other hours
+
+The **Tariff Switcher** automation switches the active tariff at every Cosy boundary and whenever solar output crosses the threshold. Template sensors multiply accumulated kWh by the configurable rates to produce cost figures in pence (divide by 100 for £).
 
 ---
 
@@ -192,13 +239,15 @@ Override can be activated two ways:
 - Tap 2: extend to 60 min
 - Tap 3: extend to 90 min (maximum)
 - Tap 4: cancel, tub off
-- OLED shows MM:SS countdown
+- OLED shows HH:MM:SS countdown
 - ESPHome `binary_sensor.hottub_temperature_override_active` bridges to HA
 
 **Dashboard:**
 - Toggle button activates override for `hottub_override_duration` hours (default 3h)
 - HA `timer.hottub_override_timer` counts down, cancels automatically
 - iOS notification sent on expiry
+
+Both paths converge on `input_boolean.hottub_in_use_override`.
 
 ---
 
@@ -222,15 +271,14 @@ Rates are configurable via `input_number.hottub_rate_*` — update them to match
 The dashboard is a self-contained single HTML file that connects to HA via the WebSocket API. No server-side rendering, no Lovelace, no custom components required — just drop it in `/config/www/hottub/` and open it in a browser.
 
 **Sections:**
-- Temperature — live water temp, target, voltage alert
-- Mode — current control mode badge
+- Temperature — live water temp with arc gauge, target, source indicator
+- Mode — current control mode badge with description
 - Solar — live production vs threshold
-- Electricity rate — current tariff and rate
-- Energy & cost — Today / This Week / This Month with tariff split (Cheap / Standard / Peak / Solar ☀️ FREE)
-- Daily breakdown — last 7 days kWh and cost
-- Schedule toggles — Solar / Cheap Rate / Standard Rate
-- Manual override — duration slider + activate button
-- Settings — solar threshold, override duration, tariff rates
+- Cosy Tariff — current rate and tariff name, 24-hour colour-coded timeline with live position marker
+- Energy & Cost — Today / This Week / This Month tabs with per-tariff kWh split and last-7-days daily breakdown
+- Schedule toggles — Solar / Cheap 04–07 / Cheap 13–16 / Cheap 22–00 / Standard Rate, each independently switchable
+- Manual override — activate button with countdown timer
+- Settings — solar threshold, override duration sliders
 
 ---
 
@@ -251,6 +299,6 @@ All user-facing settings are in `hottub_helpers.yaml` and exposed on the dashboa
 ## Notes
 
 - `sensor.power_meter` is expected to report solar production in **kW** (not W). The solar sufficient binary sensor multiplies by 1000 to compare against the W threshold.
-- The energy history calculator in the dashboard uses a rolling 31-day lookback window to avoid the month-boundary zero bug (data resets to 1st of new month before old month data is fully available).
+- The DS18B20 is read at 10-bit resolution (0.25°C steps, 187ms conversion) rather than 12-bit to avoid WiFi interrupt corruption of the OneWire bus on the ESP8266.
 - The TTP223 touch sensor is wired with `inverted: true` in ESPHome — it idles HIGH and pulls LOW on touch.
 - The font `ConsidermevexedRegular-ExLe.ttf` is not included in this repository as it is a third-party font. Download it free from FontSpace (link above).
