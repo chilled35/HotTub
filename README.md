@@ -353,5 +353,3 @@ All user-facing settings are in `hottub_helpers.yaml` and exposed on the dashboa
 - The DS18B20 is read at 10-bit resolution (0.25°C steps, 187ms conversion) rather than 12-bit to avoid WiFi interrupt corruption of the OneWire bus on the ESP8266.
 - The TTP223 touch sensor is wired with `inverted: true` in ESPHome — it idles HIGH and pulls LOW on touch.
 - The font `ConsidermevexedRegular-ExLe.ttf` is not included in this repository as it is a third-party font. Download it free from FontSpace (link above).
-
-<!-- test -->
