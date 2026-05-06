@@ -9,7 +9,8 @@ The system automatically heats the tub during cheap electricity windows, pauses 
 ## Features
 
 - **Tariff-aware scheduling** — Octopus Cosy windows (Cheap 04:00–07:00 / 13:00–16:00 / 22:00–00:00, Peak 16:00–19:00) built in; each cheap window independently toggleable
-- **Solar heating** — turns on automatically when solar production exceeds a configurable watt threshold
+- **Solar heating** — turns on automatically when solar production exceeds a configurable watt threshold, with a 5-minute debounce to filter cloud-cover flapping
+- **Solar temperature boost** — automatically raises the target temperature to 40 °C when solar is above 2 kW (so the tub runs a full heat cycle rather than cycling on/off at 38 °C); reverts to 38 °C when solar drops below 1.5 kW
 - **Peak block** — hard-forces the tub off 16:00–19:00 regardless of other conditions
 - **Physical override** — capacitive touch sensor on the OLED unit activates 30/60/90 min override with countdown display
 - **Dashboard override** — override also controllable from the web dashboard with configurable duration
@@ -78,6 +79,9 @@ ha-hottub-controller/
 │       ├── hottub_automations.yaml     Smart controller, override, tariff
 │       │                               switcher, peak block, daily store,
 │       │                               ESPHome bridge automations
+│       ├── hottub_solar_automations.yaml  Solar trigger (on/off with 5-min
+│       │                               debounce) and solar boost (target
+│       │                               temp raise/revert)
 │       └── hottub_notifications.yaml   Daily / weekly / monthly iOS push
 │
 ├── www/
@@ -87,6 +91,26 @@ ha-hottub-controller/
 ├── configuration.yaml.example          packages: block to add to HA config
 └── README.md
 ```
+
+---
+
+## Deployment
+
+These files deploy to `/config/` on the HA instance:
+
+| Repo file | HA path |
+|---|---|
+| `packages/hottub/hottub_helpers.yaml` | `/config/packages/hottub/hottub_helpers.yaml` |
+| `packages/hottub/hottub_sensors.yaml` | `/config/packages/hottub/hottub_sensors.yaml` |
+| `packages/hottub/hottub_automations.yaml` | `/config/packages/hottub/hottub_automations.yaml` |
+| `packages/hottub/hottub_solar_automations.yaml` | `/config/packages/hottub/hottub_solar_automations.yaml` |
+| `packages/hottub/hottub_notifications.yaml` | `/config/packages/hottub/hottub_notifications.yaml` |
+| `esphome/hottub-temperature.yaml` | `/config/esphome/hottub-temperature.yaml` |
+| `www/hottub/dashboard.html` | `/config/www/hottub/dashboard.html` |
+
+`configuration.yaml.example` shows the `packages:` block that must exist in HA's `configuration.yaml`.
+
+The font `ConsidermevexedRegular-ExLe.ttf` is not in the repo — it must be downloaded separately and placed at `/config/esphome/fonts/`.
 
 ---
 
@@ -116,7 +140,7 @@ On first load the dashboard will prompt for your HA URL and a long-lived access 
 ### 3. ESPHome Firmware
 
 1. Copy `esphome/hottub-temperature.yaml` to `/config/esphome/`
-2. Copy the `ConsidermevexedRegular-ExLe.ttf` font file to `/config/esphome/fonts/`  
+2. Copy the `ConsidermevexedRegular-ExLe.ttf` font file to `/config/esphome/fonts/`
    (Download from [FontSpace — ConsiderMeVexed by Chequered Ink](https://www.fontspace.com/considermevexed-font-f19295))
 3. Add WiFi credentials and passwords to `secrets.yaml`
 4. Update the DS18B20 `address:` in the YAML to match your sensor (scan the bus on first flash to find it)
@@ -217,6 +241,32 @@ The master gate (`input_boolean.hottub_schedule_enabled`) must be ON for any sch
 
 ---
 
+## Solar Heating
+
+Solar heating is handled by a dedicated automation file (`hottub_solar_automations.yaml`) with four automations.
+
+### Solar Trigger (on/off)
+
+| Automation | Behaviour |
+|---|---|
+| `hottub_solar_trigger_on` | Powers tub on when solar production has been above the threshold for **5 continuous minutes**. Checks master gate and override. |
+| `hottub_solar_trigger_off` | Powers tub off when solar drops below the threshold for 5 minutes. Only acts when mode is Solar. |
+
+The 5-minute debounce prevents rapid cycling during patchy cloud cover.
+
+### Solar Boost (target temperature)
+
+When solar is plentiful the tub can reach its target temperature quickly and begin short on/off cycles. The solar boost prevents this by raising the target while solar is active:
+
+| Automation | Trigger | Action |
+|---|---|---|
+| `hottub_solar_boost_target_on` | Solar > 2 kW for 5 min | Raises `input_number.hottub_target_temp` to **40 °C** |
+| `hottub_solar_boost_target_off` | Solar < 1.5 kW for 5 min | Reverts `input_number.hottub_target_temp` to **38 °C** |
+
+The 0.5 kW hysteresis (on at 2 kW, off at 1.5 kW) prevents flapping on days with variable cloud. Both automations also trigger on HA start and automation reload so the correct target is applied immediately without waiting for the next threshold crossing.
+
+---
+
 ## Energy & Cost Tracking
 
 Energy is tracked server-side using HA's `utility_meter` integration — no dashboard needs to be open. Three meters (daily / weekly / monthly) each have four tariff slots:
@@ -299,6 +349,7 @@ All user-facing settings are in `hottub_helpers.yaml` and exposed on the dashboa
 ## Notes
 
 - `sensor.power_meter` is expected to report solar production in **kW** (not W). The solar sufficient binary sensor multiplies by 1000 to compare against the W threshold.
+- The solar boost on/off thresholds (2 kW / 1.5 kW) are hardcoded in `hottub_solar_automations.yaml`. The solar trigger threshold is separately configurable via `input_number.hottub_solar_threshold`.
 - The DS18B20 is read at 10-bit resolution (0.25°C steps, 187ms conversion) rather than 12-bit to avoid WiFi interrupt corruption of the OneWire bus on the ESP8266.
 - The TTP223 touch sensor is wired with `inverted: true` in ESPHome — it idles HIGH and pulls LOW on touch.
 - The font `ConsidermevexedRegular-ExLe.ttf` is not included in this repository as it is a third-party font. Download it free from FontSpace (link above).
