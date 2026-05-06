@@ -765,16 +765,29 @@
         <div class="compact-threshold">Threshold: <span id="solar-threshold">2000 W</span></div>
       </div>
 
-      <!-- Electricity + Cosy Windows (merged) -->
+      <!-- Electricity + Cosy Tariff Timeline -->
       <div class="card">
         <div class="card-label">Cosy Tariff</div>
-        <div class="compact-value" id="rate-value">—</div>
+        <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:2px;">
+          <div class="compact-value" id="rate-value">—</div>
+          <div id="rate-tariff-name" style="font-size:13px; color:var(--text-dim);"></div>
+        </div>
         <div class="compact-sub" id="rate-next">—</div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:10px;">
-          <div class="window-chip">04–07 <span class="chip-badge badge-cheap">Cheap</span></div>
-          <div class="window-chip">13–16 <span class="chip-badge badge-cheap">Cheap</span></div>
-          <div class="window-chip">16–19 <span class="chip-badge badge-peak">Peak ⛔</span></div>
-          <div class="window-chip">22–00 <span class="chip-badge badge-cheap">Cheap</span></div>
+        <!-- 24-hour tariff timeline -->
+        <div style="margin-top:16px; position:relative;">
+          <div style="height:6px; border-radius:3px; background: linear-gradient(to right,
+              color-mix(in srgb, var(--override) 55%, transparent)  0%      16.667%,
+              color-mix(in srgb, var(--cheap)    55%, transparent)  16.667% 29.167%,
+              color-mix(in srgb, var(--override) 55%, transparent)  29.167% 54.167%,
+              color-mix(in srgb, var(--cheap)    55%, transparent)  54.167% 66.667%,
+              color-mix(in srgb, var(--peak)     70%, transparent)  66.667% 79.167%,
+              color-mix(in srgb, var(--override) 55%, transparent)  79.167% 91.667%,
+              color-mix(in srgb, var(--cheap)    55%, transparent)  91.667% 100%
+          );"></div>
+          <div id="tariff-marker" style="position:absolute; top:-3px; width:2px; height:12px; background:var(--text); border-radius:1px; transform:translateX(-50%); left:50%;"></div>
+          <div style="display:flex; justify-content:space-between; margin-top:6px; font-size:10px; color:var(--text-muted); font-family:var(--font-mono); letter-spacing:0.02em;">
+            <span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>
+          </div>
         </div>
       </div>
     </div>
@@ -1426,7 +1439,7 @@ function renderSolar() {
 
 // ── RATE ──────────────────────────────────────────────────
 function renderRate() {
-  const rate   = getFloat(E.rate, 0);
+  const rate   = parseFloat(getState(E.rate));
   // Attribute is named "tariff" in hottub_sensors.yaml — must match exactly.
   const period = getAttr(E.rate, 'tariff') || 'standard';
   const next   = getAttr(E.rate, 'next_change') || '—';
@@ -1435,12 +1448,34 @@ function renderRate() {
   const clr = clrMap[period] || 'var(--text)';
 
   const rateEl = document.getElementById('rate-value');
-  rateEl.textContent = rate.toFixed(1) + 'p/kWh';
-  rateEl.style.color = clr;
+  if (!isNaN(rate) && rate > 0) {
+    rateEl.textContent = rate.toFixed(1) + 'p/kWh';
+    rateEl.style.color = clr;
+  } else {
+    rateEl.textContent = '—';
+    rateEl.style.color = 'var(--text-dim)';
+  }
+
+  const nameEl = document.getElementById('rate-tariff-name');
+  if (nameEl) {
+    const names = { cheap: 'Cheap', peak: 'Peak ⛔', standard: 'Standard' };
+    nameEl.textContent = names[period] || period;
+    nameEl.style.color = clr;
+  }
 
   const nextEl = document.getElementById('rate-next');
-  nextEl.textContent = next;
+  nextEl.textContent = 'Next: ' + next;
   nextEl.style.color = period === 'peak' ? 'var(--peak)' : 'var(--text-muted)';
+
+  updateTariffMarker();
+}
+
+function updateTariffMarker() {
+  const marker = document.getElementById('tariff-marker');
+  if (!marker) return;
+  const now = new Date();
+  const pct = ((now.getHours() * 60 + now.getMinutes()) / 1440 * 100).toFixed(3);
+  marker.style.left = pct + '%';
 }
 
 // ── ENERGY ────────────────────────────────────────────────
@@ -1484,11 +1519,6 @@ function setTab(tab, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   renderEnergy();
-  const wrapper = document.getElementById('daily-breakdown');
-  if (wrapper) wrapper.style.display = 'none';
-  if ((tab === 'weekly' || tab === 'monthly') && monthlyTimeline && monthlyFirst) {
-    renderDailyBreakdown();
-  }
 }
 
 // ── OVERRIDE TIMER ─────────────────────────────────────────
@@ -1570,16 +1600,6 @@ function showSetupError(msg) {
   document.getElementById('setup-error').textContent = msg;
 }
 
-
-function getMondayMidnight() {
-  const now = new Date();
-  const day = now.getDay();
-  const daysBack = day === 0 ? 6 : day - 1;
-  const d = new Date(now);
-  d.setDate(d.getDate() - daysBack);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
 
 // ── DAILY BREAKDOWN (statistics-based) ───────────────────
 // Queries HA long-term statistics (recorder/statistics_during_period)
@@ -1679,6 +1699,8 @@ window.addEventListener('DOMContentLoaded', () => {
     const url = document.getElementById('ha-url');
     if (!url.value) url.value = window.location.origin;
   }
+  // Keep the tariff timeline marker current every minute
+  setInterval(updateTariffMarker, 60000);
 });
 </script>
 </body>
