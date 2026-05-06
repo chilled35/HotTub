@@ -265,7 +265,7 @@ automation:
           option: "Off"
 
       # ⚠️ Update notify service name to match your iOS device
-      - service: notify.mobile_app_iphone
+      - service: notify.mobile_app_jasons_iphone
         data:
           title: "🛁 Hot Tub Override Ended"
           message: >
