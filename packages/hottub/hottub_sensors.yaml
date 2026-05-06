@@ -80,7 +80,7 @@ template:
       #   tariff     — "cheap", "peak", or "standard" (used by the dashboard)
       #   next_change — human-readable label of the next tariff boundary
       - name: "Hot Tub Electricity Rate"
-        unique_id: hot_tub_electricity_rate
+        unique_id: hottub_electricity_rate
         unit_of_measurement: "p/kWh"
         icon: mdi:cash
         state: >
@@ -112,7 +112,7 @@ template:
       # Total energy consumed today (all tariff bands combined).
       # Sums the four utility meter tariff slots for today.
       - name: "Hot Tub Today Total kWh"
-        unique_id: hot_tub_today_total_kwh
+        unique_id: hottub_today_total_kwh
         unit_of_measurement: "kWh"
         icon: mdi:lightning-bolt
         state: >
@@ -126,7 +126,7 @@ template:
       # Multiply utility meter kWh by the configurable tariff rates.
       # Solar kWh has zero grid cost. Divide by 100 in the UI for pounds.
       - name: "Hot Tub Today Cost"
-        unique_id: hot_tub_today_cost
+        unique_id: hottub_today_cost
         unit_of_measurement: "p"
         icon: mdi:currency-gbp
         state: >
@@ -139,7 +139,7 @@ template:
           {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
 
       - name: "Hot Tub Week Cost"
-        unique_id: hot_tub_week_cost
+        unique_id: hottub_week_cost
         unit_of_measurement: "p"
         icon: mdi:currency-gbp
         state: >
@@ -152,7 +152,7 @@ template:
           {{ ((c * c_rate) + (s * s_rate) + (p * p_rate)) | round(1) }}
 
       - name: "Hot Tub Month Cost"
-        unique_id: hot_tub_month_cost
+        unique_id: hottub_month_cost
         unit_of_measurement: "p"
         icon: mdi:currency-gbp
         state: >
@@ -191,7 +191,7 @@ template:
       # True during the three Octopus Cosy cheap windows.
       # The smart controller uses this to decide whether to heat.
       - name: "Hot Tub Cheap Rate Active"
-        unique_id: hot_tub_cheap_rate_active
+        unique_id: hottub_cheap_rate_active
         device_class: power
         icon: mdi:cash-check
         state: >
@@ -203,7 +203,7 @@ template:
       # off), the smart controller forces the tub off regardless
       # of any other conditions — peak electricity is ~38p/kWh.
       - name: "Hot Tub Peak Block Active"
-        unique_id: hot_tub_peak_block_active
+        unique_id: hottub_peak_block_active
         device_class: safety
         icon: mdi:block-helper
         state: >
@@ -217,7 +217,7 @@ template:
       # the tub's running load. sensor.power_meter reports in kW,
       # so we multiply by 1000 to compare against the W threshold.
       - name: "Hot Tub Solar Sufficient"
-        unique_id: hot_tub_solar_sufficient
+        unique_id: hottub_solar_sufficient
         device_class: power
         icon: mdi:solar-power
         state: >
@@ -231,7 +231,7 @@ template:
       # The plug must be reporting (v > 0) before the alert fires,
       # so a missing/unavailable plug won't trigger a false alarm.
       - name: "Hot Tub Voltage Alert"
-        unique_id: hot_tub_voltage_alert
+        unique_id: hottub_voltage_alert
         device_class: problem
         icon: mdi:lightning-bolt-circle
         state: >
