@@ -62,15 +62,15 @@ automation:
         data:
           title: "Hot Tub — Weekly Report"
           message: >
-            {% set cheap = states('input_number.hottub_week_cheap_kwh')    | float(0) %}
-            {% set std   = states('input_number.hottub_week_standard_kwh') | float(0) %}
-            {% set peak  = states('input_number.hottub_week_peak_kwh')     | float(0) %}
-            {% set solar = states('input_number.hottub_week_solar_kwh')    | float(0) %}
-            {% set total = cheap + std + peak %}
+            {% set cheap = states('sensor.hottub_energy_weekly_cheap')    | float(0) %}
+            {% set std   = states('sensor.hottub_energy_weekly_standard') | float(0) %}
+            {% set peak  = states('sensor.hottub_energy_weekly_peak')     | float(0) %}
+            {% set solar = states('sensor.hottub_energy_weekly_solar')    | float(0) %}
+            {% set total = cheap + std + peak + solar %}
             {% set cost  = states('sensor.hot_tub_week_cost') | float(0) / 100 %}
-            Total: {{ total | round(2) }} kWh, GBP{{ cost | round(2) }}
-            Cheap: {{ cheap | round(2) }} kWh, Solar: {{ solar | round(2) }} kWh
-            Peak: {{ peak | round(2) }} kWh, Standard: {{ std | round(2) }} kWh
+            Total: {{ total | round(2) }} kWh · £{{ cost | round(2) }}
+            Cheap: {{ cheap | round(2) }} kWh · Solar: {{ solar | round(2) }} kWh
+            Peak: {{ peak | round(2) }} kWh · Standard: {{ std | round(2) }} kWh
           data:
             push:
               sound: default
@@ -95,15 +95,15 @@ automation:
         data:
           title: "Hot Tub — Monthly Report"
           message: >
-            {% set cheap = states('input_number.hottub_month_cheap_kwh')    | float(0) %}
-            {% set std   = states('input_number.hottub_month_standard_kwh') | float(0) %}
-            {% set peak  = states('input_number.hottub_month_peak_kwh')     | float(0) %}
-            {% set solar = states('input_number.hottub_month_solar_kwh')    | float(0) %}
-            {% set total = cheap + std + peak %}
+            {% set cheap = states('sensor.hottub_energy_monthly_cheap')    | float(0) %}
+            {% set std   = states('sensor.hottub_energy_monthly_standard') | float(0) %}
+            {% set peak  = states('sensor.hottub_energy_monthly_peak')     | float(0) %}
+            {% set solar = states('sensor.hottub_energy_monthly_solar')    | float(0) %}
+            {% set total = cheap + std + peak + solar %}
             {% set cost  = states('sensor.hot_tub_month_cost') | float(0) / 100 %}
-            Total: {{ total | round(2) }} kWh, GBP{{ cost | round(2) }}
-            Cheap: {{ cheap | round(2) }} kWh, Solar: {{ solar | round(2) }} kWh
-            Peak: {{ peak | round(2) }} kWh, Standard: {{ std | round(2) }} kWh
+            Total: {{ total | round(2) }} kWh · £{{ cost | round(2) }}
+            Cheap: {{ cheap | round(2) }} kWh · Solar: {{ solar | round(2) }} kWh
+            Peak: {{ peak | round(2) }} kWh · Standard: {{ std | round(2) }} kWh
           data:
             push:
               sound: default
