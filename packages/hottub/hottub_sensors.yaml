@@ -114,6 +114,7 @@ template:
       - name: "Hot Tub Today Total kWh"
         unique_id: hottub_today_total_kwh
         unit_of_measurement: "kWh"
+        state_class: total_increasing
         icon: mdi:lightning-bolt
         state: >
           {% set c     = states('sensor.hottub_energy_daily_cheap')    | float(0) %}
@@ -128,6 +129,7 @@ template:
       - name: "Hot Tub Today Cost"
         unique_id: hottub_today_cost
         unit_of_measurement: "p"
+        state_class: total
         icon: mdi:currency-gbp
         state: >
           {% set c      = states('sensor.hottub_energy_daily_cheap')    | float(0) %}
@@ -141,6 +143,7 @@ template:
       - name: "Hot Tub Week Cost"
         unique_id: hottub_week_cost
         unit_of_measurement: "p"
+        state_class: total
         icon: mdi:currency-gbp
         state: >
           {% set c      = states('sensor.hottub_energy_weekly_cheap')    | float(0) %}
@@ -154,6 +157,7 @@ template:
       - name: "Hot Tub Month Cost"
         unique_id: hottub_month_cost
         unit_of_measurement: "p"
+        state_class: total
         icon: mdi:currency-gbp
         state: >
           {% set c      = states('sensor.hottub_energy_monthly_cheap')    | float(0) %}
@@ -216,10 +220,18 @@ template:
       # True when the solar panels are producing enough to cover
       # the tub's running load. sensor.power_meter reports in kW,
       # so we multiply by 1000 to compare against the W threshold.
+      # delay_on/delay_off prevent chattering when clouds pass —
+      # solar must be stable above/below threshold for 2 minutes
+      # before any downstream automations (smart controller, tariff
+      # switcher, solar trigger on/off) react.
       - name: "Hot Tub Solar Sufficient"
         unique_id: hottub_solar_sufficient
         device_class: power
         icon: mdi:solar-power
+        delay_on:
+          minutes: 2
+        delay_off:
+          minutes: 2
         state: >
           {% set solar_w   = states('sensor.power_meter') | float(0) * 1000 %}
           {% set threshold = states('input_number.hottub_solar_threshold') | float(2000) %}
