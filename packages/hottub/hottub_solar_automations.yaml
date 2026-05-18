@@ -1,0 +1,218 @@
+# ============================================================
+# Hot Tub — Solar Trigger Automations
+# File: packages/hottub/hottub_solar_automations.yaml
+#
+# NOTE: sensor.power_meter reports in kW.
+#       input_number.hottub_solar_threshold is stored in W.
+#       value_template multiplies sensor by 1000 to align units.
+#
+# No peak-rate time block — April data confirms 2000W is never
+# reached after ~15:30, well before Cosy peak (16:00-19:00).
+#
+# MASTER GATE: input_boolean.hottub_schedule_enabled
+#   Solar ON checks this. Solar OFF does not.
+# ============================================================
+
+automation:
+
+  - id: hottub_solar_trigger_on
+    alias: "Hot Tub — Solar: Power On"
+    description: >
+      Powers the tub on when solar production (kW * 1000 = W)
+      has exceeded the threshold for 5 continuous minutes.
+
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.power_meter
+        value_template: "{{ (states('sensor.power_meter') | float(0)) * 1000 }}"
+        above: input_number.hottub_solar_threshold
+        for:
+          minutes: 5
+
+    condition:
+      - condition: state
+        entity_id: input_boolean.hottub_schedule_enabled
+        state: "on"
+
+      - condition: state
+        entity_id: input_boolean.hottub_schedule_solar
+        state: "on"
+
+      - condition: state
+        entity_id: switch.appliance_hottub
+        state: "off"
+
+      - condition: state
+        entity_id: input_boolean.hottub_in_use_override
+        state: "off"
+
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Solar"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: >
+            Solar trigger ON. Production:
+            {{ ((states('sensor.power_meter') | float(0)) * 1000) | round(0) }} W
+            (threshold: {{ states('input_number.hottub_solar_threshold') | round(0) }} W).
+
+    mode: single
+
+
+  - id: hottub_solar_trigger_off
+    alias: "Hot Tub — Solar: Power Off"
+    description: >
+      Powers the tub off when solar drops below threshold for
+      5 minutes. Only acts when mode is Solar.
+
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.power_meter
+        value_template: "{{ (states('sensor.power_meter') | float(0)) * 1000 }}"
+        below: input_number.hottub_solar_threshold
+        for:
+          minutes: 5
+
+    condition:
+      - condition: state
+        entity_id: input_select.hottub_control_mode
+        state: "Solar"
+
+      - condition: state
+        entity_id: switch.appliance_hottub
+        state: "on"
+
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.appliance_hottub
+
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.hottub_control_mode
+        data:
+          option: "Off"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: >
+            Solar trigger OFF. Production:
+            {{ ((states('sensor.power_meter') | float(0)) * 1000) | round(0) }} W
+            dropped below threshold
+            ({{ states('input_number.hottub_solar_threshold') | round(0) }} W)
+            for 5 minutes.
+
+    mode: single
+
+
+  # ============================================================
+  # SOLAR BOOST — RAISE TARGET TEMPERATURE
+  #
+  # When solar has been above 2 kW for 5 minutes, raise
+  # input_number.hottub_target_temp to 40 °C. This stops the
+  # priority cascade's "At Temperature" check from firing at
+  # 38 °C while solar is still running, which was causing
+  # hundreds of on/off cycles per day.
+  #
+  # When solar drops below 1.5 kW for 5 minutes, revert to
+  # 38 °C. The 0.5 kW gap prevents flapping on cloudy days.
+  #
+  # homeassistant and automation_reloaded triggers ensure the
+  # correct target is set immediately on restart or reload,
+  # rather than waiting for the next threshold crossing.
+  # ============================================================
+
+  - id: hottub_solar_boost_target_on
+    alias: "Hot Tub — Solar Boost: raise target to 40°C"
+    description: >
+      When solar exceeds 2 kW for 5 minutes, raise the thermostat
+      target to 40 °C so the tub runs a proper heat cycle rather
+      than cycling on/off at 38 °C. Also fires on HA start and
+      automation reload so an already-high solar reading is not missed.
+
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.power_meter
+        above: 2.0
+        for:
+          minutes: 5
+      - platform: homeassistant
+        event: start
+      - platform: event
+        event_type: automation_reloaded
+
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.power_meter
+        above: 2.0
+
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.hottub_target_temp
+        data:
+          value: 40
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: >
+            Solar boost activated.
+            {{ states('sensor.power_meter') | float(0) | round(2) }} kW production.
+            Target raised to 40 °C.
+
+    mode: single
+
+
+  - id: hottub_solar_boost_target_off
+    alias: "Hot Tub — Solar Boost: revert target to 38°C"
+    description: >
+      When solar drops below 1.5 kW for 5 minutes, revert the
+      target to 38 °C. Only acts if the boost is currently active
+      (target above 38) to avoid spurious reverts overnight.
+
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.power_meter
+        below: 1.5
+        for:
+          minutes: 5
+      - platform: homeassistant
+        event: start
+      - platform: event
+        event_type: automation_reloaded
+
+    condition:
+      - condition: numeric_state
+        entity_id: input_number.hottub_target_temp
+        above: 38
+      - condition: numeric_state
+        entity_id: sensor.power_meter
+        below: 1.5
+
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.hottub_target_temp
+        data:
+          value: 38
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: >
+            Solar boost deactivated.
+            {{ states('sensor.power_meter') | float(0) | round(2) }} kW production.
+            Target returned to 38 °C.
+
+    mode: single
