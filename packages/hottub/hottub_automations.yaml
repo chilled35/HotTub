@@ -8,11 +8,12 @@
 #   3.  hottub_peak_block_on          Force off at 16:00 peak start
 #   4.  hottub_override_start         Starts timer when override boolean ON
 #   5.  hottub_override_expired       Auto-cancels override when timer expires
-#   6.  hottub_tariff_switcher        Switches utility meter tariff at boundaries
+#   6.  hottub_tariff_switcher        Switches main energy meter tariff (incl. solar)
 #   7.  hottub_smart_controller       Priority cascade — main control logic
 #   8.  hottub_store_daily_totals     Snapshots usage at 23:55 for notifications
 #   9.  hottub_esphome_override_on    Bridge: D1 Mini touch → HA override ON
 #   10. hottub_esphome_override_off   Bridge: D1 Mini touch cancel → HA override OFF
+#   11. hottub_deficit_tariff_switcher Switches deficit meter tariff (time-of-day only)
 #
 # MASTER GATE: input_boolean.hottub_schedule_enabled
 #   All automations that power the tub ON check this first.
@@ -629,3 +630,72 @@ automation:
           entity_id: input_boolean.hottub_in_use_override
 
     mode: single
+
+
+  # ══════════════════════════════════════════════════════════
+  # 11. DEFICIT TARIFF SWITCHER
+  # Switches the deficit utility meter tariff at each Cosy
+  # time boundary and on HA startup. Time-of-day only — never
+  # switches to solar, because the deficit meters track the
+  # grid-cost portion of energy drawn during solar sessions.
+  # Solar kWh minus deficit kWh = truly free solar energy.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_deficit_tariff_switcher
+    alias: "Hot Tub — Deficit Tariff Switcher"
+    description: >
+      Switches deficit utility meter tariff at each Cosy boundary
+      and on HA startup. Uses time-of-day tariff only (never solar)
+      so grid deficit kWh is always charged at the correct grid rate.
+    mode: single
+
+    trigger:
+      - platform: time
+        at: "00:00:00"
+        id: "standard"
+      - platform: time
+        at: "04:00:00"
+        id: "cheap"
+      - platform: time
+        at: "07:00:00"
+        id: "standard"
+      - platform: time
+        at: "13:00:00"
+        id: "cheap"
+      - platform: time
+        at: "16:00:00"
+        id: "peak"
+      - platform: time
+        at: "19:00:00"
+        id: "standard"
+      - platform: time
+        at: "22:00:00"
+        id: "cheap"
+      - platform: homeassistant
+        event: start
+        id: "startup"
+
+    action:
+      - variables:
+          tariff: >
+            {% if trigger.id == 'startup' %}
+              {% set h = now().hour %}
+              {% if h >= 16 and h < 19 %}peak
+              {% elif (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}cheap
+              {% else %}standard{% endif %}
+            {% else %}
+              {{ trigger.id }}
+            {% endif %}
+
+      - service: select.select_option
+        target:
+          entity_id:
+            - select.hottub_deficit_daily
+            - select.hottub_deficit_weekly
+            - select.hottub_deficit_monthly
+        data:
+          option: "{{ tariff }}"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: "Deficit tariff switcher: set to {{ tariff }} (trigger: {{ trigger.id }})."
