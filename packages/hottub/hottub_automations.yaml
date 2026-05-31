@@ -293,14 +293,27 @@ automation:
 
   # ══════════════════════════════════════════════════════════
   # 6. TARIFF SWITCHER
-  # Switches utility meter active tariff at each Cosy boundary.
-  # Also runs on HA startup so costs track correctly after restart.
+  # Switches utility meter active tariff at each Cosy boundary
+  # and when solar production crosses the sufficient threshold.
+  #
+  # Solar takes priority over time-of-day tariff:
+  #   - When binary_sensor.hot_tub_solar_sufficient goes ON
+  #     → all meters switch to "solar" (zero grid cost)
+  #   - When it goes OFF → revert to the current time window
+  #   - At time boundaries → stay on "solar" if solar is active,
+  #     otherwise switch to the boundary tariff
+  #   - On HA startup → check solar first, then fall back to time
+  #
+  # This ensures energy drawn while solar is producing ≥ threshold
+  # is recorded in the solar bucket (zero cost) rather than being
+  # charged at cheap or standard rates.
   # ══════════════════════════════════════════════════════════
   - id: hottub_tariff_switcher
     alias: "Hot Tub — Tariff Switcher"
     description: >
-      Switches utility meter tariff at each Cosy period boundary
-      and on HA startup so costs are always tracked at the correct rate.
+      Switches utility meter tariff at each Cosy period boundary,
+      when solar sufficient state changes, and on HA startup.
+      Solar always takes priority over the time-of-day tariff.
     mode: single
 
     trigger:
@@ -328,17 +341,35 @@ automation:
       - platform: homeassistant
         event: start
         id: "startup"
+      - platform: state
+        entity_id: binary_sensor.hot_tub_solar_sufficient
+        to: "on"
+        id: "solar"
+      - platform: state
+        entity_id: binary_sensor.hot_tub_solar_sufficient
+        to: "off"
+        id: "solar_off"
 
     action:
       - variables:
           tariff: >
-            {% if trigger.id == 'startup' %}
+            {% macro time_tariff() %}
               {% set h = now().hour %}
               {% if h >= 16 and h < 19 %}peak
               {% elif (h >= 4 and h < 7) or (h >= 13 and h < 16) or h >= 22 %}cheap
               {% else %}standard{% endif %}
+            {% endmacro %}
+            {% if trigger.id == 'solar' %}
+              solar
+            {% elif trigger.id == 'solar_off' %}
+              {{ time_tariff() }}
+            {% elif trigger.id == 'startup' %}
+              {% if is_state('binary_sensor.hot_tub_solar_sufficient', 'on') %}solar
+              {% else %}{{ time_tariff() }}{% endif %}
             {% else %}
-              {{ trigger.id }}
+              {# Time boundary — solar stays active if currently sufficient #}
+              {% if is_state('binary_sensor.hot_tub_solar_sufficient', 'on') %}solar
+              {% else %}{{ trigger.id }}{% endif %}
             {% endif %}
 
       - service: select.select_option
@@ -349,6 +380,11 @@ automation:
             - select.hottub_energy_monthly
         data:
           option: "{{ tariff }}"
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: "Tariff switcher: set to {{ tariff }} (trigger: {{ trigger.id }})."
 
 
   # ══════════════════════════════════════════════════════════
