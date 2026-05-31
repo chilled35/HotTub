@@ -14,6 +14,7 @@
 #   9.  hottub_esphome_override_on    Bridge: D1 Mini touch → HA override ON
 #   10. hottub_esphome_override_off   Bridge: D1 Mini touch cancel → HA override OFF
 #   11. hottub_deficit_tariff_switcher Switches deficit meter tariff (time-of-day only)
+#   12. hottub_deficit_backfill_once  ONE-TIME: seeds deficit meters from Recorder history
 #
 # MASTER GATE: input_boolean.hottub_schedule_enabled
 #   All automations that power the tub ON check this first.
@@ -699,3 +700,91 @@ automation:
         data:
           name: "Hot Tub"
           message: "Deficit tariff switcher: set to {{ tariff }} (trigger: {{ trigger.id }})."
+
+
+  # ══════════════════════════════════════════════════════════
+  # 12. ONE-TIME DEFICIT BACKFILL
+  #
+  # Seeds the deficit utility meters with historical grid deficit
+  # values calculated from Recorder data (sensor.appliance_hottub_power
+  # and sensor.power_meter) for the period before live deficit
+  # tracking was enabled (i.e. before this deployment).
+  #
+  # Values were calculated via Python + SQLite on 2026-05-31:
+  #   Daily   standard: 0.683 kWh  (31 May only)
+  #   Weekly  cheap:    0.631 kWh  (25–31 May)
+  #   Weekly  standard: 3.579 kWh
+  #   Monthly cheap:    1.689 kWh  (6–31 May)
+  #   Monthly standard: 7.174 kWh
+  #
+  # The automation self-disables after running once so it never
+  # fires again on subsequent restarts. After the June 1 meter
+  # reset, delete or leave disabled — it is no longer needed.
+  # ══════════════════════════════════════════════════════════
+  - id: hottub_deficit_backfill_once
+    alias: "Hot Tub — One-Time Deficit Backfill (disable after June 1)"
+    description: >
+      Seeds deficit utility meters from Recorder-derived historical
+      values then self-disables. Safe to leave in place — it will
+      not run again once disabled, and is inert after June 1 resets.
+
+    trigger:
+      - platform: homeassistant
+        event: start
+
+    condition:
+      # Only run if the meters are still at zero (fresh after restart,
+      # before any new accumulation). Prevents double-counting if HA
+      # restarts again before June 1.
+      - condition: numeric_state
+        entity_id: sensor.hottub_deficit_weekly_standard
+        below: 0.01
+
+    action:
+      # ── TODAY (31 May) ─────────────────────────────────────
+      - service: utility_meter.calibrate
+        target:
+          entity_id: sensor.hottub_deficit_daily_standard
+        data:
+          value: 0.683
+
+      # ── THIS WEEK (25–31 May) ──────────────────────────────
+      - service: utility_meter.calibrate
+        target:
+          entity_id: sensor.hottub_deficit_weekly_cheap
+        data:
+          value: 0.631
+
+      - service: utility_meter.calibrate
+        target:
+          entity_id: sensor.hottub_deficit_weekly_standard
+        data:
+          value: 3.579
+
+      # ── THIS MONTH (6–31 May) ──────────────────────────────
+      - service: utility_meter.calibrate
+        target:
+          entity_id: sensor.hottub_deficit_monthly_cheap
+        data:
+          value: 1.689
+
+      - service: utility_meter.calibrate
+        target:
+          entity_id: sensor.hottub_deficit_monthly_standard
+        data:
+          value: 7.174
+
+      - service: logbook.log
+        data:
+          name: "Hot Tub"
+          message: >
+            One-time deficit backfill applied: daily std=0.683 kWh,
+            weekly cheap=0.631 kWh std=3.579 kWh,
+            monthly cheap=1.689 kWh std=7.174 kWh.
+
+      # Self-disable so this never runs again
+      - service: automation.turn_off
+        target:
+          entity_id: automation.hot_tub_one_time_deficit_backfill_disable_after_june_1
+
+    mode: single
