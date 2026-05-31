@@ -16,7 +16,7 @@ The system automatically heats the tub during cheap electricity windows, pauses 
 - **Dashboard override** — override also controllable from the web dashboard with configurable duration
 - **OLED status display** — 128×64 OLED shows water temperature in standby; HH:MM:SS countdown during override
 - **iOS push notifications** — daily, weekly, and monthly energy/cost reports to iPhone
-- **Energy & cost tracking** — server-side `utility_meter` entities accumulate kWh per tariff (Cheap / Standard / Peak / Solar) continuously in HA — accurate regardless of restarts or whether the dashboard is open
+- **Accurate energy & cost tracking** — server-side `utility_meter` entities track kWh per tariff (Cheap / Standard / Peak / Solar). The tariff switcher responds to both time boundaries and live solar state changes so solar energy is always recorded in the free solar bucket. A separate grid-deficit meter tracks the portion of tub consumption that exceeds solar output and charges it at the correct grid rate.
 - **Voltage monitoring** — alerts if plug voltage falls outside 210–250V
 - **Custom HTML dashboard** — standalone panel with live WebSocket connection; no Lovelace cards required
 
@@ -74,9 +74,11 @@ ha-hottub-controller/
 │   └── hottub/
 │       ├── hottub_helpers.yaml         input_number, input_boolean,
 │       │                               input_select, timer helpers
-│       ├── hottub_sensors.yaml         utility_meter energy tracking,
-│       │                               template sensors, binary sensors
+│       ├── hottub_sensors.yaml         utility_meter energy & deficit tracking,
+│       │                               integration sensor, template sensors,
+│       │                               binary sensors
 │       ├── hottub_automations.yaml     Smart controller, override, tariff
+│       │                               switcher (incl. solar), deficit tariff
 │       │                               switcher, peak block, daily store,
 │       │                               ESPHome bridge automations
 │       ├── hottub_solar_automations.yaml  Solar trigger (on/off with 5-min
@@ -127,7 +129,7 @@ homeassistant:
   packages: !include_dir_named packages
 ```
 
-**Full restart** is required after first install — `utility_meter` entities need a restart to initialise. After restarting, manually trigger the **Hot Tub — Tariff Switcher** automation once from the Automations UI to set the correct starting tariff on the new meters.
+**Full restart** is required after first install — `utility_meter` and `platform: integration` entities need a restart to initialise. After restarting, the **Hot Tub — Tariff Switcher** automation fires automatically on startup and sets the correct tariff on all meters.
 
 ### 2. Dashboard
 
@@ -179,8 +181,8 @@ Update `notify.mobile_app_jasons_iphone` in `hottub_notifications.yaml` to match
 | `input_number.hottub_yesterday_cost` | Yesterday's cost snapshot in pence (saved at 23:55) |
 | `input_boolean.hottub_schedule_enabled` | Master on/off gate for all scheduled heating |
 | `input_boolean.hottub_schedule_solar` | Enable solar heating |
-| `input_boolean.hottub_schedule_cheap_0407` | Enable cheap rate 04:00–07:00 window |
-| `input_boolean.hottub_schedule_cheap_1316` | Enable cheap rate 13:00–16:00 window |
+| `input_boolean.hottub_schedule_cheap_0400` | Enable cheap rate 04:00–07:00 window |
+| `input_boolean.hottub_schedule_cheap_1300` | Enable cheap rate 13:00–16:00 window |
 | `input_boolean.hottub_schedule_cheap_2200` | Enable cheap rate 22:00–00:00 window |
 | `input_boolean.hottub_schedule_standard` | Enable standard rate heating |
 | `input_boolean.hottub_in_use_override` | Manual override active |
@@ -192,18 +194,20 @@ Update `notify.mobile_app_jasons_iphone` in `hottub_notifications.yaml` to match
 | Entity | Purpose |
 |---|---|
 | `sensor.hot_tub_electricity_rate` | Current Cosy tariff rate (p/kWh) with `tariff` and `next_change` attributes |
+| `sensor.hottub_grid_deficit_power` | Live grid draw during solar sessions: `max(0, tub_W − solar_W)` — zero when solar is off |
+| `sensor.hot_tub_grid_deficit_energy` | Cumulative kWh of grid draw during solar sessions (integration sensor; source for deficit utility meters) |
 | `sensor.hot_tub_today_total_kwh` | Today's total kWh (all tariffs combined) |
-| `sensor.hot_tub_today_cost` | Today's running cost (pence) |
+| `sensor.hot_tub_today_cost` | Today's running cost (pence), including grid deficit during solar |
 | `sensor.hot_tub_week_cost` | This week's cost (pence) |
 | `sensor.hot_tub_month_cost` | This month's cost (pence) |
 | `binary_sensor.hot_tub_cheap_rate_active` | True during Cosy cheap windows |
 | `binary_sensor.hot_tub_peak_block_active` | True 16:00–19:00 |
-| `binary_sensor.hot_tub_solar_sufficient` | True when solar ≥ threshold |
+| `binary_sensor.hot_tub_solar_sufficient` | True when solar ≥ threshold (2-min delay on/off) |
 | `binary_sensor.hot_tub_voltage_alert` | True if voltage outside 210–250V |
 
 ### Created by this package — Utility Meters
 
-Each meter has four tariff slots: `cheap`, `standard`, `peak`, `solar`. The active tariff is switched by the tariff switcher automation at every Cosy boundary and when solar crosses the threshold.
+**Main energy meters** track total hot tub consumption. Each has four tariff slots: `cheap`, `standard`, `peak`, `solar`. The tariff switcher (automation 6) switches between them at every Cosy boundary and immediately when solar sufficient state changes — solar always takes priority.
 
 | Entity pattern | Cycle |
 |---|---|
@@ -211,7 +215,15 @@ Each meter has four tariff slots: `cheap`, `standard`, `peak`, `solar`. The acti
 | `sensor.hottub_energy_weekly_<tariff>` | Resets weekly (Monday) |
 | `sensor.hottub_energy_monthly_<tariff>` | Resets monthly (1st) |
 
-The corresponding select entities (`select.hottub_energy_daily/weekly/monthly`) control the active tariff slot.
+**Grid deficit meters** track only the portion of tub consumption that exceeds solar output during solar sessions. These are bucketed by time-of-day tariff (`cheap`, `standard`, `peak`) and their cost is added to the totals. They never switch to a solar tariff — the deficit kWh is always a real grid cost.
+
+| Entity pattern | Cycle |
+|---|---|
+| `sensor.hottub_deficit_daily_<tariff>` | Resets daily |
+| `sensor.hottub_deficit_weekly_<tariff>` | Resets weekly (Monday) |
+| `sensor.hottub_deficit_monthly_<tariff>` | Resets monthly (1st) |
+
+The corresponding select entities (`select.hottub_energy_*/select.hottub_deficit_*`) control the active tariff slot on each meter.
 
 ### ESPHome entities (D1 Mini)
 
@@ -269,14 +281,66 @@ The 0.5 kW hysteresis (on at 2 kW, off at 1.5 kW) prevents flapping on days with
 
 ## Energy & Cost Tracking
 
-Energy is tracked server-side using HA's `utility_meter` integration — no dashboard needs to be open. Three meters (daily / weekly / monthly) each have four tariff slots:
+Energy is tracked server-side using HA's `utility_meter` integration — no dashboard needs to be open.
 
-- **Solar** — takes priority when `binary_sensor.hot_tub_solar_sufficient` is ON
-- **Cheap** — 04:00–07:00, 13:00–16:00, 22:00–00:00
-- **Peak** — 16:00–19:00
-- **Standard** — all other hours
+### Main meters (total hot tub consumption)
 
-The **Tariff Switcher** automation switches the active tariff at every Cosy boundary and whenever solar output crosses the threshold. Template sensors multiply accumulated kWh by the configurable rates to produce cost figures in pence (divide by 100 for £).
+Three meters (daily / weekly / monthly) each have four tariff slots: `solar`, `cheap`, `standard`, `peak`.
+
+The **Tariff Switcher** (automation 6) switches the active tariff slot:
+- At every Cosy time boundary (00:00 / 04:00 / 07:00 / 13:00 / 16:00 / 19:00 / 22:00)
+- **Immediately** when `binary_sensor.hot_tub_solar_sufficient` goes ON → switches to `solar`
+- **Immediately** when it goes OFF → reverts to the current time-of-day tariff
+- At time boundaries while solar is active → stays on `solar`
+- On HA startup → checks solar state first, falls back to time-of-day
+
+Solar energy in the `solar` bucket has zero grid cost and is excluded from the cost total.
+
+### Grid deficit meters (grid import during solar)
+
+When the tub draws more power than solar is producing, the shortfall is pulled from the grid at the current tariff rate. For example, if the tub draws 3,000 W and solar produces 2,000 W, 1,000 W is grid-imported.
+
+`sensor.hottub_grid_deficit_power` calculates this in real time:
+
+```
+max(0, sensor.appliance_hottub_power − (sensor.power_meter × 1000))
+```
+
+This is integrated to kWh by `sensor.hot_tub_grid_deficit_energy`, which feeds three dedicated deficit utility meters (daily / weekly / monthly). The deficit meters use time-of-day tariffs only (cheap / standard / peak) — the deficit cost is added on top of the main meter cost in the template cost sensors.
+
+### Cost sensors
+
+Template sensors multiply accumulated kWh by the configurable rates:
+
+```
+cost = (energy_cheap × cheap_rate)
+     + (energy_standard × standard_rate)
+     + (energy_peak × peak_rate)
+     + (deficit_cheap × cheap_rate)
+     + (deficit_standard × standard_rate)
+     + (deficit_peak × peak_rate)
+```
+
+Results are in pence — divide by 100 for pounds.
+
+---
+
+## Automation Index
+
+| # | ID | Purpose |
+|---|---|---|
+| 1 | `hottub_cheap_rate_on` | Powers on at start of each cheap window |
+| 2 | `hottub_cheap_rate_off` | Powers off at end of each cheap window |
+| 3 | `hottub_peak_block_on` | Force off at 16:00 peak start |
+| 4 | `hottub_override_start` | Starts timer when override boolean ON |
+| 5 | `hottub_override_expired` | Auto-cancels override when timer expires |
+| 6 | `hottub_tariff_switcher` | Switches main energy meter tariff at time boundaries and on solar state changes |
+| 7 | `hottub_smart_controller` | Priority cascade — main control logic, runs every 5 min |
+| 8 | `hottub_store_daily_totals` | Snapshots kWh and cost at 23:55 for next-day notification |
+| 9 | `hottub_esphome_override_on` | Bridge: D1 Mini touch → HA override ON |
+| 10 | `hottub_esphome_override_off` | Bridge: D1 Mini touch cancel → HA override OFF |
+| 11 | `hottub_deficit_tariff_switcher` | Switches deficit meter tariff at time boundaries (time-of-day only, never solar) |
+| 12 | `hottub_deficit_backfill_once` | One-time: seeds deficit meters from Recorder history; self-disables after running |
 
 ---
 
@@ -348,7 +412,7 @@ All user-facing settings are in `hottub_helpers.yaml` and exposed on the dashboa
 
 ## Notes
 
-- `sensor.power_meter` is expected to report solar production in **kW** (not W). The solar sufficient binary sensor multiplies by 1000 to compare against the W threshold.
+- `sensor.power_meter` is expected to report solar production in **kW** (not W). The solar sufficient binary sensor multiplies by 1000 to compare against the W threshold. `sensor.hottub_grid_deficit_power` also multiplies by 1000 for the same reason.
 - The solar boost on/off thresholds (2 kW / 1.5 kW) are hardcoded in `hottub_solar_automations.yaml`. The solar trigger threshold is separately configurable via `input_number.hottub_solar_threshold`.
 - The DS18B20 is read at 10-bit resolution (0.25°C steps, 187ms conversion) rather than 12-bit to avoid WiFi interrupt corruption of the OneWire bus on the ESP8266.
 - The TTP223 touch sensor is wired with `inverted: true` in ESPHome — it idles HIGH and pulls LOW on touch.
